@@ -10,19 +10,13 @@ Whether it's managing large student datasets, handling leave requests, sending t
 
 ### Access Control & Security
 - Role-based authentication: Admin, Professor/Teacher, and Student portals
-- Magic link login with OTP verification
-- Temporary access provision for substitute teachers
 - Professors and Admins can restrict students from exams, assignments, or tests based on attendance
 - Professors control lab access using theory attendance or custom rules
 - Limited feature access for students with low attendance
-- Multi-device login detection to prevent proxy attendance
 - Student attendance records are hidden from peers
 
-### Attendance Management
-- WiFi-based automatic attendance marking (must connect to classroom WiFi)
-- Accurate attendance tracking with support for manual entry and voice commands
+### Attendance Management- Accurate attendance tracking with support for manual entry and voice commands
 - Quick bulk marking (Mark all present → edit absentees)
-- Track late entries
 - 100% attendance celebration animation
 - Sticky headers and clean student list views
 - Attendance predictor: shows how many classes can be safely skipped
@@ -43,3 +37,54 @@ Whether it's managing large student datasets, handling leave requests, sending t
 
 ### User Interface & Experience
 - Built with React
+- Clean, uniform design with consistent color scheme
+- Bento grid layout with summary cards and remarks on dashboards
+- Progress bars and visual rings for attendance percentage (warning below 75%)
+- Monthly attendance heatmaps for students
+- Individual student attendance tracking for professors
+- Export attendance reports as PDF or Excel
+- Global search bar with keyboard shortcut
+- Loading indicators and smooth UX (no blank screens)
+- Profile pictures/avatars for students
+- Quick filters by subject or date
+- Menu bar for easy navigation between courses
+
+### Routine & Timetable Management
+- Daily class routine display
+- Students can view schedules using class or email ID
+- Admin uploads timetable → automatic professor and class assignment
+- Option to mark class cancellations (no attendance counted)
+- Teachers/Class Representatives can schedule extra classes
+
+### Data Management
+- Secure and isolated data per college/institution
+- Relational data handled with Supabase SQL
+- Efficient handling of large datasets and historical attendance records
+- Store attendance per lecture (date-wise and class-wise history)
+- Sort students by attendance percentage
+- Bar graphs and visual analytics for attendance patterns
+
+### Assignments & Tests
+- Professors can set minimum attendance thresholds to unlock assignments and tests
+- Personalized assignments with unique questions
+- Student-specific test result dashboard
+- Analysis of assignment score vs attendance ratio
+
+### Additional Features
+- Auto backup system for attendance records
+- Attendance freeze option to prevent proxy corrections after a deadline
+- Performance monitoring for system reliability
+- Future-ready: GPS-based location verification (with professor confirmation) and OCR for schedule import
+
+## Tech Stack
+- **Frontend**: React.js + Tailwind CSS
+- **Backend**: Node.js (implied)
+- **Authentication**: Auth.js with OTP and magic links
+- **Real-time**: Socket.io
+- **Database**: Supabase (PostgreSQL) for relational data + MongoDB-style flexibility for attendance logs where needed
+- **Notifications**: Email + real-time via Socket.io
+
+
+---
+
+**Secure • Accurate • Intelligent**
