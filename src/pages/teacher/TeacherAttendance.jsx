@@ -265,6 +265,7 @@ export default function TeacherAttendance() {
               onClick={() => { setSubmitted(false); setSelectedSection(null); setAttendance({}) }}
               className="mt-2 text-xs text-blue-500 hover:underline"
             >
+              
               Take another class
             </button>
           </div>
@@ -273,3 +274,4 @@ export default function TeacherAttendance() {
     </AppLayout>
   )
 }
+//Keno hoche na commit 
