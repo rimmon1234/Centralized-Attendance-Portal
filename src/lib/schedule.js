@@ -69,3 +69,10 @@ export async function getClassAverage(classSectionId, examName) {
   const avg = data.reduce((sum, r) => sum + (r.marks_obtained / r.max_marks) * 100, 0) / data.length
   return { average: Math.round(avg), error: null }
 }
+
+// Get today's schedule for teacher or student
+export async function getTodaySchedule(role) {
+  // TODO: Fetch real schedule from database (e.g., routines table) 
+  // Returning empty array as fallback to unblock rendering
+  return { data: [], error: null }
+}

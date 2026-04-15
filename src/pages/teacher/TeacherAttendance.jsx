@@ -1,5 +1,3 @@
-TeacherAttendance.jsx
-
 import { useEffect, useState } from 'react'
 import AppLayout from '../../components/shared/AppLayout'
 import { getMyAssignedSections, getStudentsInSection } from '../../lib/profile'
@@ -188,31 +186,28 @@ export default function TeacherAttendance() {
                         <div className="flex gap-2">
                           <button
                             onClick={() => toggle(studentId, 'present')}
-                            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                              status === 'present'
+                            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${status === 'present'
                                 ? 'bg-green-50 dark:bg-green-950 text-green-600 dark:text-green-400 border-green-200 dark:border-green-800'
                                 : 'border-gray-100 dark:border-gray-700 text-gray-400 hover:border-green-200'
-                            }`}
+                              }`}
                           >
                             P
                           </button>
                           <button
                             onClick={() => toggle(studentId, 'absent')}
-                            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                              status === 'absent'
+                            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${status === 'absent'
                                 ? 'bg-red-50 dark:bg-red-950 text-red-500 dark:text-red-400 border-red-200 dark:border-red-800'
                                 : 'border-gray-100 dark:border-gray-700 text-gray-400 hover:border-red-200'
-                            }`}
+                              }`}
                           >
                             A
                           </button>
                           <button
                             onClick={() => toggle(studentId, 'late')}
-                            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                              status === 'late'
+                            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${status === 'late'
                                 ? 'bg-amber-50 dark:bg-amber-950 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800'
                                 : 'border-gray-100 dark:border-gray-700 text-gray-400 hover:border-amber-200'
-                            }`}
+                              }`}
                           >
                             L
                           </button>
@@ -265,7 +260,7 @@ export default function TeacherAttendance() {
               onClick={() => { setSubmitted(false); setSelectedSection(null); setAttendance({}) }}
               className="mt-2 text-xs text-blue-500 hover:underline"
             >
-              
+
               Take another class
             </button>
           </div>

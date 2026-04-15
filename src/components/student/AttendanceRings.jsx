@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const CircularProgress = ({ name, percentage, isOverall, color, size = 150, strokeWidth = 14, delay = 0 }) => {
   const [mounted, setMounted] = useState(false);
@@ -23,9 +24,9 @@ const CircularProgress = ({ name, percentage, isOverall, color, size = 150, stro
 
   return (
     <div 
-      className={`group relative flex flex-col items-center justify-between p-6 bg-white border ${
+      className={`group relative flex flex-col items-center justify-start p-5 sm:p-6 bg-white border ${
         isOverall ? 'border-gray-100 shadow-[0_8px_30px_rgb(0,0,0,0.08)]' : 'border-gray-50 shadow-sm hover:border-gray-100 hover:shadow-[0_8px_20px_rgb(0,0,0,0.04)]'
-      } rounded-[2rem] transition-all duration-300 ease-out hover:-translate-y-1 overflow-hidden
+      } rounded-[2rem] transition-all duration-300 ease-out hover:-translate-y-1 overflow-hidden h-full
       ${!mounted ? 'opacity-0 translate-y-4' : 'opacity-100 translate-y-0'}`}
       style={{ transitionDelay: `${mounted ? 0 : delay}ms` }}
     >
@@ -79,13 +80,13 @@ const CircularProgress = ({ name, percentage, isOverall, color, size = 150, stro
         </div>
       </div>
       
-      <div className="flex flex-col items-center mt-5 w-full h-[60px] justify-start z-10">
-        <h4 className={`font-bold text-center leading-tight px-1 ${isOverall ? 'text-gray-900 text-[1.1rem]' : 'text-gray-500 text-[0.95rem]'}`}>
+      <div className="flex flex-col items-center mt-4 w-full flex-1 justify-between z-10 gap-3">
+        <h4 className={`font-bold text-center leading-tight px-1 flex-1 flex items-center ${isOverall ? 'text-gray-900 text-[1.1rem]' : 'text-gray-500 text-[0.95rem]'}`}>
           {name}
         </h4>
         
         {!isOverall && percentage < 75 && (
-          <span className="mt-2 text-[11px] text-[#ef4444] font-bold bg-[#fef2f2] border border-[#fca5a5] px-3 py-1 rounded-full inline-block text-center whitespace-nowrap shadow-sm group-hover:bg-[#ef4444] group-hover:text-white transition-colors duration-300">
+          <span className="text-[10px] uppercase tracking-wider text-[#ef4444] font-bold bg-[#fef2f2] border border-[#fca5a5] px-3 py-1 rounded-full inline-block text-center whitespace-nowrap shadow-sm group-hover:bg-[#ef4444] group-hover:text-white transition-colors duration-300">
             Ineligible
           </span>
         )}
@@ -95,7 +96,9 @@ const CircularProgress = ({ name, percentage, isOverall, color, size = 150, stro
 };
 
 
-const AttendanceRings = ({ title, subjects }) => {
+const AttendanceRings = ({ title, subjects, detailsPath }) => {
+  const navigate = useNavigate();
+
   // calculate overall percentage
   const total = subjects.reduce((acc, sub) => acc + sub.percentage, 0);
   const overallPercentage = subjects.length > 0 ? total / subjects.length : 0;
@@ -120,9 +123,14 @@ const AttendanceRings = ({ title, subjects }) => {
     <div className="bg-white/80 p-6 md:p-8 rounded-[2.5rem] shadow-[0_4px_24px_rgb(0,0,0,0.02)] border border-gray-100/50 w-full mb-8 backdrop-blur-xl">
       <div className="flex items-center justify-between mb-8 pb-5 border-b border-gray-100">
         <h3 className="text-2xl font-extrabold tracking-tight text-gray-900">{title}</h3>
-        <button className="hidden sm:flex text-sm font-bold text-gray-400 hover:text-gray-800 transition-colors bg-gray-50 hover:bg-gray-100 rounded-full px-4 py-2">
-          View Details
-        </button>
+        {detailsPath && (
+          <button
+            onClick={() => navigate(detailsPath)}
+            className="hidden sm:flex text-sm font-bold text-gray-400 hover:text-gray-800 transition-colors bg-gray-50 hover:bg-gray-100 rounded-full px-4 py-2 cursor-pointer"
+          >
+            View Details
+          </button>
+        )}
       </div>
       
       {/* Container for Rings */}
