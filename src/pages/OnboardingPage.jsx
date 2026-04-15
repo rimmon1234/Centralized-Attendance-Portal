@@ -4,12 +4,12 @@ import { useAuth } from '../hooks/useAuth'
 import { supabase } from '../lib/supabase'
 
 const DEPARTMENTS = [
-  'Computer Science & Engineering',
-  'Information Technology',
-  'Electronics & Communication Engineering',
-  'Electrical Engineering',
-  'Mechanical Engineering',
-  'Civil Engineering',
+  { value: 'CSE', label: 'Computer Science & Engineering' },
+  { value: 'IT', label: 'Information Technology' },
+  { value: 'ECE', label: 'Electronics & Communication Engineering' },
+  { value: 'EE', label: 'Electrical Engineering' },
+  { value: 'ME', label: 'Mechanical Engineering' },
+  { value: 'CE', label: 'Civil Engineering' },
 ]
 
 const YEARS = ['1st', '2nd', '3rd', '4th']
@@ -200,7 +200,7 @@ export default function OnboardingPage() {
               >
                 <option value="">Select department</option>
                 {DEPARTMENTS.map((d) => (
-                  <option key={d} value={d}>{d}</option>
+                  <option key={d.value} value={d.value}>{d.label}</option>
                 ))}
               </select>
             </div>

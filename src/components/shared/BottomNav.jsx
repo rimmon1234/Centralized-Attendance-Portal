@@ -7,6 +7,7 @@ const linksByRole = {
     { to: '/schedule', label: 'Schedule' },
     { to: '/assignments', label: 'Tasks' },
     { to: '/notes', label: 'Notes' },
+    { to: '/contacts', label: 'Hub' },
   ],
   teacher: [
     { to: '/dashboard', label: 'Home' },
