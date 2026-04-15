@@ -30,7 +30,7 @@ function TeacherCard({ teacher }) {
       flexDirection: 'column',
       transition: 'transform 0.2s ease, box-shadow 0.2s ease',
     }}
-    className="teacher-card"
+      className="teacher-card"
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
         <div style={{
