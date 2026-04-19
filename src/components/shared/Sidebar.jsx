@@ -7,6 +7,7 @@ const studentLinks = [
   { to: '/assignments', label: 'Assignments' },
   { to: '/notes', label: 'Notes' },
   { to: '/contacts', label: 'Contacts' },
+  { to: '/can-i-skip', label: 'Can I Skip?' },
 ]
 
 const teacherLinks = [

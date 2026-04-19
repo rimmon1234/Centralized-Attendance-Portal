@@ -7,6 +7,7 @@ import StudentNotes from '../pages/student/StudentNotes'
 import StudentLectureDetails from '../pages/student/StudentLectureDetails'
 import StudentLabDetails from '../pages/student/StudentLabDetails'
 import StudentContacts from '../pages/student/StudentContacts'
+import StudentCanISkip from '../pages/student/StudentCanISkip'
 
 export default function StudentRoutes() {
   return (
@@ -19,6 +20,7 @@ export default function StudentRoutes() {
       <Route path="lectures" element={<StudentLectureDetails />} />
       <Route path="labs" element={<StudentLabDetails />} />
       <Route path="contacts" element={<StudentContacts />} />
+      <Route path="can-i-skip" element={<StudentCanISkip />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   )
