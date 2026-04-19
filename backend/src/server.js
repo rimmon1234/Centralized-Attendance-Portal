@@ -52,24 +52,6 @@ app.use('/api/v1/contacts', requireAuth, contactRoutes)
 app.use('/api/v1/assignments', requireAuth, assignmentRoutes)
 app.use('/api/v1/admin', requireAuth, requireAdminRole, adminRoutes)
 
-// DEBUG: DB connection test (WITH auth to pass RLS)
-app.get('/api/v1/debug/db-test', requireAuth, async (req, res) => {
-  try {
-    const { data: courses, error: courseErr } = await req.supabase.from('courses').select('id, code, name').limit(5)
-    const { data: profiles, error: profileErr } = await req.supabase.from('profiles').select('id, email, role').limit(5)
-    const { data: sections, error: sectionErr } = await req.supabase.from('class_sections').select('id, department, year_of_study, section').limit(5)
-
-    res.json({
-      dbConnected: true,
-      userRole: req.user.role,
-      courses: { count: courses?.length || 0, data: courses, error: courseErr?.message },
-      profiles: { count: profiles?.length || 0, data: profiles, error: profileErr?.message },
-      sections: { count: sections?.length || 0, data: sections, error: sectionErr?.message },
-    })
-  } catch (err) {
-    res.status(500).json({ dbConnected: false, error: err.message })
-  }
-})
 
 // 404 handler
 app.use((req, res) => {

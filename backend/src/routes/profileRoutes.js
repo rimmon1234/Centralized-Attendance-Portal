@@ -28,7 +28,6 @@ router.get('/role', async (req, res) => {
       .eq('id', req.user.id)
       .single()
 
-    console.log(`[DEBUG /role SSR] user: ${req.user.id}, data:`, data, 'error:', error?.message)
 
     if (error || !data) return res.json({ data: { role: null } })
     return res.json({ data: { role: data.role } })
