@@ -2,16 +2,23 @@ import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
 import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 import { requireAuth } from './middleware/authMiddleware.js'
+import { requireAdminRole } from './middleware/requireAdminRole.js'
 import profileRoutes from './routes/profileRoutes.js'
 import attendanceRoutes from './routes/attendanceRoutes.js'
 import scheduleRoutes from './routes/scheduleRoutes.js'
 import marksRoutes from './routes/marksRoutes.js'
 import contentRoutes from './routes/contentRoutes.js'
 import contactRoutes from './routes/contactRoutes.js'
+import assignmentRoutes from './routes/assignmentRoutes.js'
+import adminRoutes from './routes/adminRoutes.js'
 
-dotenv.config()
+dotenv.config({ path: path.resolve(__dirname, '../.env') })
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -42,6 +49,8 @@ app.use('/api/v1/schedule', requireAuth, scheduleRoutes)
 app.use('/api/v1/marks', requireAuth, marksRoutes)
 app.use('/api/v1/content', requireAuth, contentRoutes)
 app.use('/api/v1/contacts', requireAuth, contactRoutes)
+app.use('/api/v1/assignments', requireAuth, assignmentRoutes)
+app.use('/api/v1/admin', requireAuth, requireAdminRole, adminRoutes)
 
 // DEBUG: DB connection test (WITH auth to pass RLS)
 app.get('/api/v1/debug/db-test', requireAuth, async (req, res) => {

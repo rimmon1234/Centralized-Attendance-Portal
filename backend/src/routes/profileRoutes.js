@@ -192,4 +192,95 @@ router.put('/dev-role', async (req, res) => {
   }
 })
 
+/**
+ * POST /api/v1/profile/onboard
+ * Complete user onboarding after authentication
+ * Body: { role, fullName, department, year?, section?, rollNumber?, employeeId? }
+ */
+router.post('/onboard', async (req, res) => {
+  try {
+    const { role, fullName, department, year, section, rollNumber, employeeId } = req.body
+    const user = req.user
+
+    // Validation
+    if (!role || !fullName || !department) {
+      return res.status(400).json({
+        error: 'role, fullName, and department are required',
+      })
+    }
+
+    if (!['student', 'teacher'].includes(role)) {
+      return res.status(400).json({ error: 'role must be student or teacher' })
+    }
+
+    // Step 1: Update profiles table
+    const { error: profileError } = await req.supabase
+      .from('profiles')
+      .update({
+        full_name: fullName.trim(),
+        role,
+        college_name: 'Heritage Institute of Technology',
+      })
+      .eq('id', user.id)
+
+    if (profileError) {
+      return res.status(400).json({ error: profileError.message })
+    }
+
+    // Step 2: Insert into role-specific table
+    if (role === 'student') {
+      if (!year || !rollNumber) {
+        return res.status(400).json({
+          error: 'For students, year and rollNumber are required',
+        })
+      }
+
+      const { error: studentError } = await req.supabase
+        .from('student_profiles')
+        .upsert(
+          {
+            profile_id: user.id,
+            year_of_study: year,
+            department: department.toUpperCase(),
+            section: section || null,
+            roll_number: rollNumber.trim().toUpperCase(),
+          },
+          { onConflict: 'profile_id' }
+        )
+
+      if (studentError) {
+        return res.status(400).json({ error: studentError.message })
+      }
+    }
+
+    if (role === 'teacher') {
+      if (!employeeId) {
+        return res.status(400).json({
+          error: 'For teachers, employeeId is required',
+        })
+      }
+
+      const { error: teacherError } = await req.supabase
+        .from('teacher_profiles')
+        .upsert(
+          {
+            profile_id: user.id,
+            department: department.toUpperCase(),
+            employee_id: employeeId.trim().toUpperCase(),
+          },
+          { onConflict: 'profile_id' }
+        )
+
+      if (teacherError) {
+        return res.status(400).json({ error: teacherError.message })
+      }
+    }
+
+    return res.json({ success: true, role })
+  } catch (err) {
+    console.error('POST /profile/onboard error:', err)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 export default router
