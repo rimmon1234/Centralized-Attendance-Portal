@@ -203,7 +203,6 @@ export default function AdminSchedule() {
     try {
       setSaving(true); setError(null)
       const sectionIds = cohort.classSections.map(cs => cs.id)
-
       let payload = []
       gridSchedules.forEach(s => {
         if (s.isSpecial) {
