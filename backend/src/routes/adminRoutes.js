@@ -1198,7 +1198,9 @@ router.delete('/schedules/:id', async (req, res) => {
     const { id } = req.params
     const supabase = req.supabase
 
-    const { error } = await supabase
+    const db = supabaseAdmin || supabase
+
+    const { error } = await db
       .from('class_schedules')
       .delete()
       .eq('id', id)
@@ -1223,6 +1225,7 @@ router.put('/schedules/replace', async (req, res) => {
   try {
     const { sectionIds, routineId, schedules } = req.body
     const supabase = req.supabase
+    const db = supabaseAdmin || supabase
 
     if (!sectionIds || !Array.isArray(sectionIds) || !schedules || !Array.isArray(schedules) || !routineId) {
       return res.status(400).json({ error: 'sectionIds, routineId, and schedules arrays are required' })
@@ -1230,7 +1233,7 @@ router.put('/schedules/replace', async (req, res) => {
 
     if (sectionIds.length > 0) {
       // 1. Delete existing schedules for these sections AND this routine
-      const { error: deleteError } = await supabase
+      const { error: deleteError } = await db
         .from('class_schedules')
         .delete()
         .in('class_section_id', sectionIds)
@@ -1247,7 +1250,7 @@ router.put('/schedules/replace', async (req, res) => {
         ...s,
         routine_id: routineId
       }))
-      const { data, error: insertError } = await supabase
+      const { data, error: insertError } = await db
         .from('class_schedules')
         .insert(payload)
         .select()
