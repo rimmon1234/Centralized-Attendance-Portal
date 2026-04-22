@@ -25,15 +25,12 @@ const PORT = process.env.PORT || 3001
 
 // Middleware
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-      callback(null, true)
-    } else {
-      callback(new Error('Not allowed by CORS'))
-    }
-  },
-  credentials: true,
-}))
+  origin: [
+    "http://localhost:5173",
+    "https://your-frontend.vercel.app"
+  ],
+  credentials: true
+}));
 app.use(express.json())
 app.use(morgan('dev'))
 
