@@ -16,6 +16,24 @@ function normalizeYear(value) {
   return null
 }
 
+/**
+ * Convert a numeric year to the ordinal string format that class_sections expects.
+ * class_sections.year_of_study stores '1st', '2nd', '3rd', '4th' (text column with check constraint)
+ * while class_routines.year_of_study stores integers 1, 2, 3, 4.
+ */
+function yearToOrdinal(value) {
+  const num = typeof value === 'number' ? value : normalizeYear(value)
+  if (num === 1) return '1st'
+  if (num === 2) return '2nd'
+  if (num === 3) return '3rd'
+  if (num === 4) return '4th'
+  // Fallback: if it's already a valid ordinal string, return as-is
+  if (typeof value === 'string' && /^[1-4](st|nd|rd|th)$/i.test(value.trim())) {
+    return value.trim().toLowerCase().replace(/^(\d)/, (m) => m)
+  }
+  return null
+}
+
 function normalizeDepartment(value) {
   if (!value) return ''
   const compact = String(value).trim().toUpperCase().replace(/[^A-Z]/g, '')
@@ -1337,17 +1355,17 @@ router.put('/schedules/replace', async (req, res) => {
       return res.status(400).json({ error: 'routineId and schedules array are required' })
     }
 
-    if (sectionIds.length > 0) {
-      // 1. Delete existing schedules for these sections AND this routine
-      const { error: deleteError } = await db
-        .from('class_schedules')
-        .delete()
-        .in('class_section_id', sectionIds)
-        .eq('routine_id', routineId)
+    // 1. Delete ALL existing schedules for this routine.
+    //    We delete by routine_id alone (not filtered by sectionIds) because
+    //    previous saves may have auto-created new class_sections that the
+    //    frontend doesn't know about yet.
+    const { error: deleteError } = await db
+      .from('class_schedules')
+      .delete()
+      .eq('routine_id', routineId)
 
-      if (deleteError) {
-        return res.status(400).json({ error: deleteError.message })
-      }
+    if (deleteError) {
+      return res.status(400).json({ error: deleteError.message })
     }
 
     // 2. Insert new schedules
@@ -1367,12 +1385,24 @@ router.put('/schedules/replace', async (req, res) => {
       }
       
       if (!cohort && year && section) {
-        cohort = { year_of_study: normalizeYear(year), section: String(section).trim().toUpperCase(), department: req.body.adminDepartment || 'GLOBAL' }
+        const numYear = normalizeYear(year)
+        if (!numYear || numYear < 1 || numYear > 4) {
+          return res.status(400).json({ error: `Invalid year value: "${year}" (resolved to ${numYear}). Expected 1-4.` })
+        }
+        cohort = { year_of_study: numYear, section: String(section).trim().toUpperCase(), department: req.body.adminDepartment || 'GLOBAL' }
       }
 
       if (!cohort) {
         return res.status(400).json({ error: 'Could not resolve cohort context' })
       }
+
+      // Normalize year_of_study to integer for internal logic
+      const cohortYearNum = typeof cohort.year_of_study === 'number' ? cohort.year_of_study : normalizeYear(cohort.year_of_study)
+      if (!cohortYearNum || cohortYearNum < 1 || cohortYearNum > 4) {
+        return res.status(400).json({ error: `Invalid year_of_study in cohort: "${cohort.year_of_study}". Must be 1-4.` })
+      }
+      // class_sections.year_of_study is a TEXT column expecting ordinal strings ('1st', '2nd', etc.)
+      const cohortYearOrdinal = yearToOrdinal(cohortYearNum)
       
       const processedSchedules = []
 
@@ -1386,26 +1416,33 @@ router.put('/schedules/replace', async (req, res) => {
             .select('id')
             .eq('course_id', s.course_id)
             .eq('department', cohort.department)
-            .eq('year_of_study', cohort.year_of_study)
+            .eq('year_of_study', cohortYearOrdinal)
             .eq('section', cohort.section)
             .single()
           
           if (existing) {
             finalSectionId = existing.id
           } else {
-            // Create new class_section
+            // Create new class_section with ordinal year format
+            console.log('[schedules/replace] Creating class_section:', {
+              course_id: s.course_id,
+              department: cohort.department,
+              year_of_study: cohortYearOrdinal,
+              section: cohort.section
+            })
             const { data: created, error: createError } = await db
               .from('class_sections')
               .insert({
                 course_id: s.course_id,
                 department: cohort.department,
-                year_of_study: cohort.year_of_study,
+                year_of_study: cohortYearOrdinal,
                 section: cohort.section
               })
               .select('id')
               .single()
             
             if (createError) {
+              console.error('[schedules/replace] class_section insert error:', createError.message, { course_id: s.course_id, year_of_study: cohortYearOrdinal, section: cohort.section, department: cohort.department })
               return res.status(400).json({ error: `Failed to create section for course ${s.course_id}: ${createError.message}` })
             }
             finalSectionId = created.id
@@ -1533,12 +1570,14 @@ router.post('/teacher-assignments', async (req, res) => {
 
     // 2. If no sectionId, create/find the section using cohort info
     if (!finalSectionId && courseId && cohort) {
+      // class_sections.year_of_study is a TEXT column expecting ordinal strings
+      const yearOrd = yearToOrdinal(cohort.yearOfStudy)
       const { data: existing } = await db
         .from('class_sections')
         .select('id')
         .eq('course_id', courseId)
         .eq('department', cohort.department)
-        .eq('year_of_study', cohort.yearOfStudy)
+        .eq('year_of_study', yearOrd)
         .eq('section', cohort.section)
         .single()
 
@@ -1550,7 +1589,7 @@ router.post('/teacher-assignments', async (req, res) => {
           .insert({
             course_id: courseId,
             department: cohort.department,
-            year_of_study: cohort.yearOfStudy,
+            year_of_study: yearOrd,
             section: cohort.section
           })
           .select()

@@ -507,7 +507,7 @@ router.get('/teacher', async (req, res) => {
     const assignedSectionIds = (asgn || []).map(a => a.class_section_id)
     
     let query = db.from('class_schedules')
-      .select('*, class_routines!inner(is_active), class_sections (section, courses (name, code), teacher_assignments(teacher_profiles(profiles(full_name))))')
+      .select('*, class_routines!inner(is_active), class_sections (section, year_of_study, department, courses (name, code, type), teacher_assignments(teacher_profiles(profiles(full_name))))')
       .eq('class_routines.is_active', true)
       .order('day', { ascending: true })
 
@@ -534,19 +534,19 @@ router.get('/teacher', async (req, res) => {
 router.get('/today', async (req, res) => {
   try {
     const role = req.query.role || 'student'
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-    const today = days[new Date().getDay()]
+    const daysArr = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+    const today = daysArr[new Date().getDay()]
+    const db = supabaseAdmin || req.supabase
     let allData = []
     
     if (role === 'teacher') {
-      const db = supabaseAdmin || req.supabase
       const { data: tp } = await db.from('teacher_profiles').select('id').eq('profile_id', req.user.id).single()
       if (tp) {
         const { data: asgn } = await db.from('teacher_assignments').select('class_section_id').eq('teacher_id', tp.id)
         const assignedSectionIds = (asgn || []).map(a => a.class_section_id)
 
         let query = db.from('class_schedules')
-          .select('*, class_routines!inner(is_active), class_sections (section, courses (name, code), teacher_assignments(teacher_profiles(profiles(full_name))))')
+          .select('*, class_routines!inner(is_active), class_sections (section, year_of_study, department, courses (name, code, type), teacher_assignments(teacher_profiles(profiles(full_name))))')
           .eq('class_routines.is_active', true)
           .order('day', { ascending: true })
 
@@ -566,7 +566,6 @@ router.get('/today', async (req, res) => {
         allData = filtered.map(normalizeSchedule)
       }
     } else {
-      const db = supabaseAdmin || req.supabase
       const { data: sp } = await db
         .from('student_profiles')
         .select('id, department, year_of_study, section, current_semester')
@@ -677,7 +676,10 @@ router.get('/today', async (req, res) => {
 
     const todayOnly = allData.filter(s => s.day === today)
     return res.json({ data: todayOnly })
-  } catch (err) { return res.status(500).json({ error: 'Internal server error' }) }
+  } catch (err) {
+    console.error('[schedule/today] Internal error:', err)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
 })
 
 export default router
