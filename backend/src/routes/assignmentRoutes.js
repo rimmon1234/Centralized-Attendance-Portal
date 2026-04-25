@@ -1,6 +1,47 @@
 import { Router } from 'express'
+import { supabaseAdmin } from '../lib/supabase.js'
 
 const router = Router()
+
+function hashString(input) {
+  let hash = 2166136261
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return hash >>> 0
+}
+
+function seededShuffle(items, seedInput) {
+  const arr = [...items]
+  let seed = hashString(String(seedInput || 'seed'))
+
+  const nextRand = () => {
+    // LCG params from Numerical Recipes, stable across runs.
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+    return seed / 4294967296
+  }
+
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(nextRand() * (i + 1))
+    const temp = arr[i]
+    arr[i] = arr[j]
+    arr[j] = temp
+  }
+
+  return arr
+}
+
+async function getTeacherProfileId(supabase, profileId) {
+  const { data: teacherProfile, error } = await supabase
+    .from('teacher_profiles')
+    .select('id')
+    .eq('profile_id', profileId)
+    .single()
+
+  if (error || !teacherProfile) return null
+  return teacherProfile.id
+}
 
 /**
  * POST /api/v1/assignments
@@ -11,6 +52,7 @@ router.post('/', async (req, res) => {
   try {
     const { classSectionId, title, questionCount, dueAt, description } = req.body
     const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
 
     if (!classSectionId || !title || !questionCount) {
       return res.status(400).json({
@@ -18,11 +60,15 @@ router.post('/', async (req, res) => {
       })
     }
 
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
+
     // Verify user is a teacher assigned to this section
     const { data: assignment } = await req.supabase
       .from('teacher_assignments')
       .select('id')
-      .eq('teacher_id', user.id)
+      .eq('teacher_id', teacherId)
       .eq('class_section_id', classSectionId)
       .single()
 
@@ -37,7 +83,7 @@ router.post('/', async (req, res) => {
       .from('assignments')
       .insert({
         class_section_id: classSectionId,
-        created_by: user.id,
+        created_by: teacherId,
         title: title.trim(),
         question_count: questionCount,
         due_at: dueAt || null,
@@ -64,6 +110,7 @@ router.post('/', async (req, res) => {
 router.get('/student', async (req, res) => {
   try {
     const user = req.user
+    const db = supabaseAdmin || req.supabase
 
     // Get student profile
     const { data: studentProfile, error: spError } = await req.supabase
@@ -76,7 +123,7 @@ router.get('/student', async (req, res) => {
       return res.status(404).json({ error: 'Student profile not found' })
     }
 
-    // Get enrollments and their assignments
+    // Get student enrollments and section metadata
     const { data: enrollments, error: enrollError } = await req.supabase
       .from('enrollments')
       .select(`
@@ -87,15 +134,6 @@ router.get('/student', async (req, res) => {
             id,
             name,
             code
-          ),
-          assignments (
-            id,
-            title,
-            question_count,
-            due_at,
-            description,
-            created_by,
-            created_at
           )
         )
       `)
@@ -105,29 +143,303 @@ router.get('/student', async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch enrollments' })
     }
 
-    // Flatten and enrich response
-    const assignments = enrollments
-      .flatMap((e) => {
-        const section = e.class_sections
-        if (!section?.assignments) return []
-        return section.assignments.map((a) => ({
-          id: a.id,
-          title: a.title,
-          description: a.description,
-          questionCount: a.question_count,
-          dueAt: a.due_at,
-          createdAt: a.created_at,
-          sectionId: section.id,
-          course: {
-            id: section.courses.id,
-            name: section.courses.name,
-            code: section.courses.code,
-          },
-        }))
-      })
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    const sectionRows = enrollments || []
+    const sectionIds = sectionRows.map((e) => e.class_section_id).filter(Boolean)
 
-    return res.json({ data: assignments })
+    if (sectionIds.length === 0) {
+      return res.json({ data: [] })
+    }
+
+    const sectionMap = Object.fromEntries(
+      sectionRows.map((row) => [row.class_section_id, row.class_sections])
+    )
+
+    const { data: assignmentRows, error: assignmentError } = await db
+      .from('assignments')
+      .select(`
+        id,
+        class_section_id,
+        title,
+        description,
+        question_count,
+        due_at,
+        created_at,
+        created_by
+      `)
+      .in('class_section_id', sectionIds)
+      .order('created_at', { ascending: false })
+
+    if (assignmentError) {
+      return res.status(500).json({ error: assignmentError.message })
+    }
+
+    const assignments = assignmentRows || []
+    if (assignments.length === 0) {
+      return res.json({ data: [] })
+    }
+
+    const teacherIds = [...new Set(assignments.map((a) => a.created_by).filter(Boolean))]
+    let teacherMap = {}
+    if (teacherIds.length > 0) {
+      const { data: teacherRows, error: teacherError } = await db
+        .from('teacher_profiles')
+        .select(`
+          id,
+          employee_id,
+          profiles (
+            full_name,
+            email
+          )
+        `)
+        .in('id', teacherIds)
+
+      if (teacherError) {
+        return res.status(500).json({ error: teacherError.message })
+      }
+
+      teacherMap = Object.fromEntries(
+        (teacherRows || []).map((t) => [
+          t.id,
+          {
+            id: t.id,
+            name: t.profiles?.full_name || 'Assigned Teacher',
+            email: t.profiles?.email || null,
+            employeeId: t.employee_id || null,
+          },
+        ])
+      )
+    }
+
+    const assignmentIds = assignments.map((a) => a.id)
+    let questionMap = {}
+    if (assignmentIds.length > 0) {
+      const { data: linkRows, error: linkError } = await db
+        .from('assignment_questions')
+        .select(`
+          assignment_id,
+          question_bank (
+            id,
+            question_text,
+            topic,
+            difficulty
+          )
+        `)
+        .in('assignment_id', assignmentIds)
+
+      if (linkError) {
+        return res.status(500).json({ error: linkError.message })
+      }
+
+      questionMap = (linkRows || []).reduce((acc, row) => {
+        const assignmentId = row.assignment_id
+        const question = row.question_bank
+        if (!assignmentId || !question?.id) return acc
+        if (!acc[assignmentId]) acc[assignmentId] = []
+        acc[assignmentId].push({
+          id: question.id,
+          text: question.question_text,
+          topic: question.topic,
+          difficulty: question.difficulty,
+        })
+        return acc
+      }, {})
+    }
+
+    let sectionQuestionMap = {}
+    if (sectionIds.length > 0) {
+      const { data: sectionQuestionRows, error: sectionQuestionError } = await db
+        .from('question_bank')
+        .select('id, class_section_id, question_text, topic, difficulty')
+        .in('class_section_id', sectionIds)
+
+      if (sectionQuestionError) {
+        return res.status(500).json({ error: sectionQuestionError.message })
+      }
+
+      sectionQuestionMap = (sectionQuestionRows || []).reduce((acc, row) => {
+        if (!row?.class_section_id || !row?.id) return acc
+        if (!acc[row.class_section_id]) acc[row.class_section_id] = []
+        acc[row.class_section_id].push({
+          id: row.id,
+          text: row.question_text,
+          topic: row.topic,
+          difficulty: row.difficulty,
+        })
+        return acc
+      }, {})
+    }
+
+    // Build deterministic student rank within each section so different
+    // students in the same assignment section receive different offsets.
+    let sectionStudentRankMap = {}
+    if (sectionIds.length > 0) {
+      const { data: sectionEnrollmentRows, error: sectionEnrollmentError } = await db
+        .from('enrollments')
+        .select('class_section_id, student_id')
+        .in('class_section_id', sectionIds)
+
+      if (sectionEnrollmentError) {
+        return res.status(500).json({ error: sectionEnrollmentError.message })
+      }
+
+      const groupedBySection = (sectionEnrollmentRows || []).reduce((acc, row) => {
+        const sectionId = row.class_section_id
+        const sid = row.student_id
+        if (!sectionId || !sid) return acc
+        if (!acc[sectionId]) acc[sectionId] = []
+        acc[sectionId].push(sid)
+        return acc
+      }, {})
+
+      sectionStudentRankMap = Object.fromEntries(
+        Object.entries(groupedBySection).map(([sectionId, studentIds]) => {
+          const ranked = [...new Set(studentIds)].sort((a, b) => String(a).localeCompare(String(b)))
+          const rankMap = Object.fromEntries(ranked.map((sid, idx) => [sid, idx]))
+          return [sectionId, rankMap]
+        })
+      )
+    }
+
+    const sectionToCourseId = Object.fromEntries(
+      sectionRows.map((row) => [row.class_section_id, row.class_sections?.courses?.id || null])
+    )
+
+    const sectionToCourseType = Object.fromEntries(
+      sectionRows.map((row) => [
+        row.class_section_id,
+        String(row.class_sections?.courses?.type || '').toLowerCase() || null,
+      ])
+    )
+
+    const { data: sessionRows, error: sessionError } = await db
+      .from('attendance_sessions')
+      .select('id, class_section_id, session_type')
+      .in('class_section_id', sectionIds)
+
+    if (sessionError) {
+      return res.status(500).json({ error: sessionError.message })
+    }
+
+    const sessionIds = (sessionRows || []).map((s) => s.id)
+
+    let recordMap = {}
+    if (sessionIds.length > 0) {
+      const { data: attendanceRecordRows, error: attendanceRecordError } = await db
+        .from('attendance_records')
+        .select('session_id, status')
+        .eq('student_id', studentProfile.id)
+        .in('session_id', sessionIds)
+
+      if (attendanceRecordError) {
+        return res.status(500).json({ error: attendanceRecordError.message })
+      }
+
+      recordMap = Object.fromEntries(
+        (attendanceRecordRows || []).map((r) => [r.session_id, r.status])
+      )
+    }
+
+    // Attendance gate must be per-course (not per-section), and missing
+    // records count as absent (same model used in attendance dashboard).
+    const attendanceByCourse = (sessionRows || []).reduce((acc, session) => {
+      const sectionId = session.class_section_id
+      if (!sectionId) return acc
+
+      const courseId = sectionToCourseId[sectionId]
+      if (!courseId) return acc
+
+      const courseType = sectionToCourseType[sectionId]
+      const sessionType = String(session.session_type || '').toLowerCase()
+
+      // Keep gate calculation aligned with dashboard subject buckets.
+      if (courseType && courseType !== 'all' && sessionType && sessionType !== courseType) {
+        return acc
+      }
+
+      if (!acc[courseId]) {
+        acc[courseId] = { attended: 0, total: 0 }
+      }
+
+      acc[courseId].total += 1
+
+      const status = recordMap[session.id] || 'absent'
+      if (status === 'present' || status === 'late') {
+        acc[courseId].attended += 1
+      }
+
+      return acc
+    }, {})
+
+    const responseData = assignments.map((a) => {
+      const section = sectionMap[a.class_section_id]
+      const course = section?.courses || {}
+      const teacher = teacherMap[a.created_by] || {
+        id: a.created_by,
+        name: 'Assigned Teacher',
+        email: null,
+        employeeId: null,
+      }
+
+      const attendance = attendanceByCourse[course.id] || { attended: 0, total: 0 }
+      const percentage = attendance.total > 0
+        ? Math.round((attendance.attended / attendance.total) * 100)
+        : 0
+      const canAccess = percentage >= 75
+
+      const linkedPool = questionMap[a.id] || []
+      const sectionPool = sectionQuestionMap[a.class_section_id] || []
+      const pool = sectionPool.length > 0 ? sectionPool : linkedPool
+
+      // Keep assignment-level randomization, then offset by student rank so
+      // different students do not all receive the same leading subset.
+      const randomizedPool = seededShuffle(pool, `assignment:${a.id}`)
+      const requestedCount = Number.isFinite(Number(a.question_count))
+        ? Number(a.question_count)
+        : randomizedPool.length
+      const effectiveCount = Math.max(0, Math.min(requestedCount, randomizedPool.length))
+
+      const rankMapForSection = sectionStudentRankMap[a.class_section_id] || {}
+      const studentRank = Number.isInteger(rankMapForSection[studentProfile.id])
+        ? rankMapForSection[studentProfile.id]
+        : 0
+
+      const randomizedQuestions = []
+      if (effectiveCount > 0) {
+        for (let i = 0; i < effectiveCount; i += 1) {
+          const index = (studentRank + i) % randomizedPool.length
+          randomizedQuestions.push(randomizedPool[index])
+        }
+      }
+
+      return {
+        id: a.id,
+        title: a.title,
+        description: a.description,
+        questionCount: a.question_count,
+        dueAt: a.due_at,
+        createdAt: a.created_at,
+        sectionId: a.class_section_id,
+        course: {
+          id: course.id,
+          name: course.name,
+          code: course.code,
+        },
+        teacher,
+        attendance: {
+          attended: attendance.attended,
+          total: attendance.total,
+          percentage,
+          required: 75,
+        },
+        isAccessible: canAccess,
+        blockedReason: canAccess
+          ? null
+          : 'Minimum 75% attendance required in this course to access assignment questions.',
+        questions: randomizedQuestions,
+      }
+    })
+
+    return res.json({ data: responseData })
   } catch (err) {
     console.error('GET /assignments/student error:', err)
     return res.status(500).json({ error: 'Internal server error' })
@@ -142,12 +454,17 @@ router.get('/sections/:id', async (req, res) => {
   try {
     const { id: classSectionId } = req.params
     const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
+
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
 
     // Verify teacher is assigned to this section
     const { data: assignment } = await req.supabase
       .from('teacher_assignments')
       .select('id')
-      .eq('teacher_id', user.id)
+      .eq('teacher_id', teacherId)
       .eq('class_section_id', classSectionId)
       .single()
 
@@ -202,6 +519,7 @@ router.post('/questions', async (req, res) => {
   try {
     const { classSectionId, questionText, topic, difficulty, assignmentIds } = req.body
     const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
 
     if (!classSectionId || !questionText) {
       return res.status(400).json({
@@ -209,11 +527,15 @@ router.post('/questions', async (req, res) => {
       })
     }
 
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
+
     // Verify user is a teacher assigned to this section
     const { data: assignment } = await req.supabase
       .from('teacher_assignments')
       .select('id')
-      .eq('teacher_id', user.id)
+      .eq('teacher_id', teacherId)
       .eq('class_section_id', classSectionId)
       .single()
 
@@ -228,7 +550,7 @@ router.post('/questions', async (req, res) => {
       .from('question_bank')
       .insert({
         class_section_id: classSectionId,
-        created_by: user.id,
+        created_by: teacherId,
         question_text: questionText.trim(),
         topic: topic?.trim() || null,
         difficulty: difficulty || 'medium',
@@ -272,12 +594,17 @@ router.get('/questions/:sectionId', async (req, res) => {
   try {
     const { sectionId } = req.params
     const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
+
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
 
     // Verify user is a teacher assigned to this section
     const { data: assignment } = await req.supabase
       .from('teacher_assignments')
       .select('id')
-      .eq('teacher_id', user.id)
+      .eq('teacher_id', teacherId)
       .eq('class_section_id', sectionId)
       .single()
 
@@ -322,6 +649,86 @@ router.get('/questions/:sectionId', async (req, res) => {
 })
 
 /**
+ * POST /api/v1/assignments/:id/link-questions
+ * Link existing question bank items to an assignment
+ * Body: { questionIds: string[] }
+ */
+router.post('/:id/link-questions', async (req, res) => {
+  try {
+    const { id: assignmentId } = req.params
+    const { questionIds } = req.body
+    const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
+
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
+
+    if (!Array.isArray(questionIds) || questionIds.length === 0) {
+      return res.status(400).json({ error: 'questionIds must be a non-empty array' })
+    }
+
+    const uniqueQuestionIds = [...new Set(questionIds.filter(Boolean))]
+    if (uniqueQuestionIds.length === 0) {
+      return res.status(400).json({ error: 'No valid question IDs provided' })
+    }
+
+    const { data: assignment, error: assignmentError } = await req.supabase
+      .from('assignments')
+      .select('id, class_section_id, created_by')
+      .eq('id', assignmentId)
+      .single()
+
+    if (assignmentError || !assignment) {
+      return res.status(404).json({ error: 'Assignment not found' })
+    }
+
+    if (assignment.created_by !== teacherId) {
+      return res.status(403).json({ error: 'You can only update your own assignments' })
+    }
+
+    const { data: validQuestions, error: questionsError } = await req.supabase
+      .from('question_bank')
+      .select('id')
+      .in('id', uniqueQuestionIds)
+      .eq('class_section_id', assignment.class_section_id)
+
+    if (questionsError) {
+      return res.status(400).json({ error: questionsError.message })
+    }
+
+    const validIds = (validQuestions || []).map((q) => q.id)
+    if (validIds.length === 0) {
+      return res.status(400).json({ error: 'No matching questions found for this assignment section' })
+    }
+
+    const links = validIds.map((questionId) => ({
+      assignment_id: assignmentId,
+      question_id: questionId,
+    }))
+
+    const { data, error } = await req.supabase
+      .from('assignment_questions')
+      .upsert(links, { onConflict: 'assignment_id,question_id' })
+      .select('assignment_id, question_id')
+
+    if (error) {
+      return res.status(400).json({ error: error.message })
+    }
+
+    return res.json({
+      data: {
+        assignmentId,
+        linkedCount: data?.length || 0,
+      },
+    })
+  } catch (err) {
+    console.error('POST /assignments/:id/link-questions error:', err)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/**
  * DELETE /api/v1/assignments/:id
  * Delete an assignment (teacher only)
  */
@@ -329,6 +736,11 @@ router.delete('/:id', async (req, res) => {
   try {
     const { id: assignmentId } = req.params
     const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
+
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
 
     // Get assignment and verify ownership
     const { data: assignment, error: getError } = await req.supabase
@@ -341,7 +753,7 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Assignment not found' })
     }
 
-    if (assignment.created_by !== user.id) {
+    if (assignment.created_by !== teacherId) {
       return res.status(403).json({
         error: 'You can only delete your own assignments'
       })

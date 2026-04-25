@@ -11,7 +11,7 @@ export async function getMyStudentProfile() {
 
 export async function getMyTeacherProfile() {
   try {
-    const result = await apiFetch('/api/v1/profiles/teachers')
+    const result = await apiFetch('/api/v1/profiles/teacher')
     return { data: result.data, error: null }
   } catch (err) {
     return { data: null, error: err }
