@@ -10,10 +10,11 @@ import TeacherRoutes from './TeacherRoutes'
 import AdminRoutes from './AdminRoutes'
 
 function RoleRouter() {
-  const { user, role, loading } = useAuth()
+  const { user, role, requiresOnboarding, loading } = useAuth()
 
   if (loading) return <LoadingScreen />
   if (!user) return <Navigate to="/auth" replace />
+  if (requiresOnboarding) return <Navigate to="/onboarding" replace />
   if (!role) return <Navigate to="/onboarding" replace />
   if (role === 'student') return <StudentRoutes />
   if (role === 'teacher') return <TeacherRoutes />

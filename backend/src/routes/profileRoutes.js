@@ -62,6 +62,9 @@ function matchesStudentCohort(studentYear, studentSemester, sectionYear, section
 async function findCohortSectionsForStudent(supabase, studentProfile) {
   if (!studentProfile?.department) return []
 
+  const studentDepartment = normalizeDepartment(studentProfile.department)
+  const studentSection = normalizeSection(studentProfile.section)
+
   let candidateQuery = supabase
     .from('class_sections')
     .select(`
@@ -71,7 +74,6 @@ async function findCohortSectionsForStudent(supabase, studentProfile) {
       department,
       courses (semester)
     `)
-    .eq('department', studentProfile.department)
 
   if (studentProfile.section) {
     candidateQuery = candidateQuery.eq('section', studentProfile.section)
@@ -83,9 +85,16 @@ async function findCohortSectionsForStudent(supabase, studentProfile) {
   const studentSemester = studentProfile.current_semester ? parseInt(studentProfile.current_semester, 10) : null
 
   let matched = (candidates || []).filter((c) => {
+    const sectionDepartment = normalizeDepartment(c.department)
+    const departmentMatch = !studentDepartment || !sectionDepartment || sectionDepartment === studentDepartment
+    if (!departmentMatch) return false
+
     const sectionYear = normalizeYear(c.year_of_study)
     const sectionSemester = c.courses?.semester ? parseInt(c.courses.semester, 10) : null
-    return matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
+    const sectionValue = normalizeSection(c.section)
+    const sectionMatch = !studentSection || !sectionValue || sectionValue === studentSection
+
+    return sectionMatch && matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
   })
 
   if (matched.length === 0 && studentProfile.section) {
@@ -98,13 +107,32 @@ async function findCohortSectionsForStudent(supabase, studentProfile) {
         department,
         courses (semester)
       `)
-      .eq('department', studentProfile.department)
 
     matched = (deptWide || []).filter((c) => {
+      const sectionDepartment = normalizeDepartment(c.department)
+      const departmentMatch = !studentDepartment || !sectionDepartment || sectionDepartment === studentDepartment
+      if (!departmentMatch) return false
+
       const sectionYear = normalizeYear(c.year_of_study)
       const sectionSemester = c.courses?.semester ? parseInt(c.courses.semester, 10) : null
-      return matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
+      const sectionValue = normalizeSection(c.section)
+      const sectionMatch = !studentSection || !sectionValue || sectionValue === studentSection
+
+      return sectionMatch && matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
     })
+
+    // Last resort: if section labels are inconsistent, ignore section and keep cohort.
+    if (matched.length === 0) {
+      matched = (deptWide || []).filter((c) => {
+        const sectionDepartment = normalizeDepartment(c.department)
+        const departmentMatch = !studentDepartment || !sectionDepartment || sectionDepartment === studentDepartment
+        if (!departmentMatch) return false
+
+        const sectionYear = normalizeYear(c.year_of_study)
+        const sectionSemester = c.courses?.semester ? parseInt(c.courses.semester, 10) : null
+        return matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
+      })
+    }
   }
 
   return matched
@@ -139,7 +167,13 @@ router.get('/role', async (req, res) => {
     if (error || !data) {
       // If error is just missing column, we still want the role
       console.warn('GET /profile/role fetch warning:', error?.message)
-      return res.json({ data: { role: data?.role || null, adminDepartment: data?.department || null } })
+      return res.json({
+        data: {
+          role: data?.role || null,
+          adminDepartment: data?.department || null,
+          requiresOnboarding: !(data?.role),
+        },
+      })
     }
     
     // If admin, infer department from email if column is empty
@@ -148,7 +182,35 @@ router.get('/role', async (req, res) => {
       adminDept = getDepartmentFromEmail(data.email)
     }
 
-    return res.json({ data: { role: data.role, adminDepartment: adminDept } })
+    let requiresOnboarding = false
+
+    if (data.role === 'student') {
+      const { data: studentProfile } = await req.supabase
+        .from('student_profiles')
+        .select('id, roll_number, department, year_of_study')
+        .eq('profile_id', req.user.id)
+        .single()
+
+      requiresOnboarding = !studentProfile || !studentProfile.roll_number || !studentProfile.department || !studentProfile.year_of_study
+    } else if (data.role === 'teacher') {
+      const { data: teacherProfile } = await req.supabase
+        .from('teacher_profiles')
+        .select('id, employee_id, department')
+        .eq('profile_id', req.user.id)
+        .single()
+
+      requiresOnboarding = !teacherProfile || !teacherProfile.employee_id || !teacherProfile.department
+    } else if (!data.role) {
+      requiresOnboarding = true
+    }
+
+    return res.json({
+      data: {
+        role: data.role,
+        adminDepartment: adminDept,
+        requiresOnboarding,
+      },
+    })
   } catch (err) {
     console.error('GET /profile/role error:', err)
     return res.status(500).json({ error: 'Internal server error' })
@@ -264,15 +326,72 @@ router.get('/teacher/stats', async (req, res) => {
       })
     }
 
-    // 2. Count unique students across these sections
+    // 2. Start with explicit enrollments across assigned sections.
     const { data: enrollments, error: enrollmentError } = await db
       .from('enrollments')
-      .select('student_id')
+      .select('class_section_id, student_id')
       .in('class_section_id', sectionIds)
 
     if (enrollmentError) throw enrollmentError
 
-    const uniqueStudents = new Set((enrollments || []).map(e => e.student_id))
+    const uniqueStudents = new Set((enrollments || []).map((e) => e.student_id).filter(Boolean))
+    const explicitBySection = (enrollments || []).reduce((acc, row) => {
+      if (!row?.class_section_id || !row?.student_id) return acc
+      if (!acc[row.class_section_id]) acc[row.class_section_id] = new Set()
+      acc[row.class_section_id].add(row.student_id)
+      return acc
+    }, {})
+
+    // 3. Cohort fallback: include students that match section cohort
+    // even if enrollment seeding is partial.
+    const { data: sectionRows, error: sectionError } = await db
+      .from('class_sections')
+      .select('id, year_of_study, section, department, courses (semester)')
+      .in('id', sectionIds)
+
+    if (sectionError) throw sectionError
+
+    const { data: candidateStudents, error: studentsError } = await db
+      .from('student_profiles')
+      .select('id, year_of_study, current_semester, section, department')
+
+    if (studentsError) throw studentsError
+
+    for (const section of sectionRows || []) {
+      const sectionYear = normalizeYear(section.year_of_study)
+      const sectionSemester = section.courses?.semester ? parseInt(section.courses.semester, 10) : null
+      const targetDepartment = normalizeDepartment(section.department)
+      const targetSectionName = normalizeSection(section.section)
+      const explicitForSection = explicitBySection[section.id] || new Set()
+
+      const strictMatches = (candidateStudents || []).filter((sp) => {
+        const studentDepartment = normalizeDepartment(sp.department)
+        if (targetDepartment && studentDepartment && studentDepartment !== targetDepartment) return false
+
+        const studentYear = normalizeYear(sp.year_of_study) ?? toYearFromSemester(sp.current_semester)
+        const studentSemester = sp.current_semester ? parseInt(sp.current_semester, 10) : null
+        const cohortMatch = matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
+        const sectionMatch = !targetSectionName || !normalizeSection(sp.section) || normalizeSection(sp.section) === targetSectionName
+        return cohortMatch && sectionMatch
+      })
+
+      const effectiveMatches = strictMatches.length > 0
+        ? strictMatches
+        : (candidateStudents || []).filter((sp) => {
+          const studentYear = normalizeYear(sp.year_of_study) ?? toYearFromSemester(sp.current_semester)
+          const studentSemester = sp.current_semester ? parseInt(sp.current_semester, 10) : null
+          const cohortMatch = matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
+          const sectionMatch = !targetSectionName || !normalizeSection(sp.section) || normalizeSection(sp.section) === targetSectionName
+          return cohortMatch && sectionMatch
+        })
+
+      for (const sp of effectiveMatches) {
+        if (!sp?.id) continue
+        if (!explicitForSection.has(sp.id)) {
+          uniqueStudents.add(sp.id)
+        }
+      }
+    }
 
     return res.json({
       data: {
@@ -488,8 +607,8 @@ router.get('/sections/:id/students', async (req, res) => {
       .order('student_profiles(roll_number)', { ascending: true })
 
     if (error) return res.status(400).json({ error: error.message })
-    diagnostics.enrollmentsCount = (data || []).length
-    if ((data || []).length > 0) return res.json({ data, meta: diagnostics })
+    const enrolledRows = data || []
+    diagnostics.enrollmentsCount = enrolledRows.length
 
     // Fallback: resolve students by section cohort when explicit enrollment rows
     // are missing, then try backfilling enrollments.
@@ -537,8 +656,25 @@ router.get('/sections/:id/students', async (req, res) => {
       return cohortMatch && sectionMatch
     })
 
-    diagnostics.matchedStudentsCount = matchedStudents.length
-    if (matchedStudents.length === 0) {
+    // If department codes differ across linked sections (cross-dept/shared sections),
+    // retry without department filtering so teachers still see valid cohort students.
+    const fallbackMatchedStudents = matchedStudents.length > 0
+      ? matchedStudents
+      : (candidateStudents || []).filter((sp) => {
+        const studentYear = normalizeYear(sp.year_of_study) ?? toYearFromSemester(sp.current_semester)
+        const studentSemester = sp.current_semester ? parseInt(sp.current_semester, 10) : null
+        const cohortMatch = matchesStudentCohort(studentYear, studentSemester, sectionYear, sectionSemester)
+        const sectionMatch = !targetSectionName || !normalizeSection(sp.section) || normalizeSection(sp.section) === targetSectionName
+        return cohortMatch && sectionMatch
+      })
+
+    diagnostics.matchedStudentsCount = fallbackMatchedStudents.length
+    if (fallbackMatchedStudents.length === 0) {
+      if (enrolledRows.length > 0) {
+        diagnostics.source = 'enrollments'
+        return res.json({ data: enrolledRows, meta: diagnostics })
+      }
+
       diagnostics.source = 'none'
       diagnostics.hint = diagnostics.serviceRoleEnabled
         ? 'No cohort-matched students found for this section. Verify student department/year/semester/section values.'
@@ -546,10 +682,23 @@ router.get('/sections/:id/students', async (req, res) => {
       return res.json({ data: [], meta: diagnostics })
     }
 
+    const enrolledStudentIds = new Set(
+      enrolledRows
+        .map((row) => row?.student_profiles?.id || row?.student_id)
+        .filter(Boolean)
+    )
+
+    const missingStudents = fallbackMatchedStudents.filter((sp) => !enrolledStudentIds.has(sp.id))
+
+    if (missingStudents.length === 0) {
+      diagnostics.source = 'enrollments'
+      return res.json({ data: enrolledRows, meta: diagnostics })
+    }
+
     const { error: backfillError } = await db
       .from('enrollments')
       .upsert(
-        matchedStudents.map((sp) => ({
+        missingStudents.map((sp) => ({
           student_id: sp.id,
           class_section_id: req.params.id,
         })),
@@ -578,7 +727,7 @@ router.get('/sections/:id/students', async (req, res) => {
       return res.json({ data: backfilled, meta: diagnostics })
     }
 
-    const inferred = matchedStudents
+    const inferred = missingStudents
       .sort((a, b) => String(a.roll_number || '').localeCompare(String(b.roll_number || ''), undefined, { numeric: true }))
       .map((sp) => ({
         id: `inferred-${req.params.id}-${sp.id}`,
@@ -595,9 +744,15 @@ router.get('/sections/:id/students', async (req, res) => {
         },
       }))
 
-    diagnostics.source = 'inferred'
+    diagnostics.source = 'enrollments+inferred'
     diagnostics.hint = 'Returned inferred cohort students because enrollment backfill could not be confirmed.'
-    return res.json({ data: inferred, meta: diagnostics })
+    return res.json({
+      data: [
+        ...enrolledRows,
+        ...inferred,
+      ].sort((a, b) => String(a?.student_profiles?.roll_number || '').localeCompare(String(b?.student_profiles?.roll_number || ''), undefined, { numeric: true })),
+      meta: diagnostics,
+    })
   } catch (err) {
     console.error('GET /profile/sections/:id/students error:', err)
     return res.status(500).json({ error: 'Internal server error' })
@@ -676,9 +831,10 @@ router.post('/onboard', async (req, res) => {
         .single()
 
       if (studentProfile) {
-        const matchedSections = await findCohortSectionsForStudent(req.supabase, studentProfile)
+        const enrollmentDb = supabaseAdmin || req.supabase
+        const matchedSections = await findCohortSectionsForStudent(enrollmentDb, studentProfile)
         if (matchedSections.length > 0) {
-          const { error: enrollmentSeedError } = await req.supabase
+          const { error: enrollmentSeedError } = await enrollmentDb
             .from('enrollments')
             .upsert(
               matchedSections.map((s) => ({

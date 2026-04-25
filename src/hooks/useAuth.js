@@ -5,6 +5,7 @@ export function useAuth() {
   const [user, setUser] = useState(null)
   const [role, setRole] = useState(() => localStorage.getItem('role'))
   const [adminDepartment, setAdminDepartment] = useState(() => localStorage.getItem('adminDepartment'))
+  const [requiresOnboarding, setRequiresOnboarding] = useState(() => localStorage.getItem('requiresOnboarding') === 'true')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -23,22 +24,28 @@ export function useAuth() {
           if (fresh) {
             setRole(fresh.role)
             setAdminDepartment(fresh.adminDepartment)
+            setRequiresOnboarding(Boolean(fresh.requiresOnboarding))
             if (fresh.role) localStorage.setItem('role', fresh.role)
             else localStorage.removeItem('role')
             if (fresh.adminDepartment) localStorage.setItem('adminDepartment', fresh.adminDepartment)
             else localStorage.removeItem('adminDepartment')
+            localStorage.setItem('requiresOnboarding', String(Boolean(fresh.requiresOnboarding)))
           } else {
             const cachedRole = localStorage.getItem('role')
             const cachedDept = localStorage.getItem('adminDepartment')
+            const cachedOnboarding = localStorage.getItem('requiresOnboarding') === 'true'
             setRole(cachedRole)
             setAdminDepartment(cachedDept)
+            setRequiresOnboarding(cachedOnboarding)
             if (!cachedRole) localStorage.removeItem('role')
             if (!cachedDept) localStorage.removeItem('adminDepartment')
           }
         } else {
           setUser(null)
           setRole(null)
+          setRequiresOnboarding(false)
           localStorage.removeItem('role')
+          localStorage.removeItem('requiresOnboarding')
         }
       } catch (err) {
         console.error('useAuth init error:', err)
@@ -62,15 +69,19 @@ export function useAuth() {
         if (fresh) {
           setRole(fresh.role)
           setAdminDepartment(fresh.adminDepartment)
+          setRequiresOnboarding(Boolean(fresh.requiresOnboarding))
           if (fresh.role) localStorage.setItem('role', fresh.role)
           else localStorage.removeItem('role')
           if (fresh.adminDepartment) localStorage.setItem('adminDepartment', fresh.adminDepartment)
           else localStorage.removeItem('adminDepartment')
+          localStorage.setItem('requiresOnboarding', String(Boolean(fresh.requiresOnboarding)))
         } else {
           const cachedRole = localStorage.getItem('role')
           const cachedDept = localStorage.getItem('adminDepartment')
+          const cachedOnboarding = localStorage.getItem('requiresOnboarding') === 'true'
           setRole(cachedRole)
           setAdminDepartment(cachedDept)
+          setRequiresOnboarding(cachedOnboarding)
           if (!cachedRole) localStorage.removeItem('role')
           if (!cachedDept) localStorage.removeItem('adminDepartment')
         }
@@ -78,8 +89,10 @@ export function useAuth() {
         setUser(null)
         setRole(null)
         setAdminDepartment(null)
+        setRequiresOnboarding(false)
         localStorage.removeItem('role')
         localStorage.removeItem('adminDepartment')
+        localStorage.removeItem('requiresOnboarding')
       }
       if (mounted) setLoading(false)
     })
@@ -90,5 +103,5 @@ export function useAuth() {
     }
   }, [])
 
-  return { user, role, adminDepartment, loading }
+  return { user, role, adminDepartment, requiresOnboarding, loading }
 }

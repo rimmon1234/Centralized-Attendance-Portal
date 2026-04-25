@@ -52,7 +52,8 @@ export async function getRole() {
     const result = await apiFetch('/api/v1/profiles/role')
     return {
       role: result.data?.role || null,
-      adminDepartment: result.data?.adminDepartment || null
+      adminDepartment: result.data?.adminDepartment || null,
+      requiresOnboarding: Boolean(result.data?.requiresOnboarding),
     }
   } catch {
     return null

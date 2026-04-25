@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
 import AppLayout from '../../components/shared/AppLayout'
-import { getMyAssignedSections, getStudentsInSection } from '../../lib/profile'
-import { supabase } from '../../lib/supabase'
+import { getMyAssignedSections } from '../../lib/profile'
+import {
+  getAssignmentsForSection,
+  createAssignment,
+  getQuestionBank,
+  addQuestion,
+  linkQuestionsToAssignment,
+} from '../../lib/assignments'
 
 export default function TeacherAssignments() {
   const [sections, setSections] = useState([])
@@ -42,20 +48,20 @@ export default function TeacherAssignments() {
   }, [selectedSection])
 
   async function loadAssignments() {
-    const { data } = await supabase
-      .from('assignments')
-      .select('*')
-      .eq('class_section_id', selectedSection)
-      .order('created_at', { ascending: false })
+    const { data, error: fetchError } = await getAssignmentsForSection(selectedSection)
+    if (fetchError) {
+      setError(fetchError.message || 'Failed to load assignments.')
+      return
+    }
     setAssignments(data || [])
   }
 
   async function loadQuestions() {
-    const { data } = await supabase
-      .from('question_bank')
-      .select('*')
-      .eq('class_section_id', selectedSection)
-      .order('created_at', { ascending: false })
+    const { data, error: fetchError } = await getQuestionBank(selectedSection)
+    if (fetchError) {
+      setError(fetchError.message || 'Failed to load question bank.')
+      return
+    }
     setQuestions(data || [])
   }
 
@@ -65,34 +71,32 @@ export default function TeacherAssignments() {
     setError(null)
     setSubmitting(true)
 
-    // Get teacher profile id
-    const { data: { user } } = await supabase.auth.getUser()
-    const { data: tp } = await supabase
-      .from('teacher_profiles')
-      .select('id')
-      .eq('profile_id', user.id)
-      .single()
+    const { data: assignment, error: assignmentError } = await createAssignment({
+      classSectionId: selectedSection,
+      title: formTitle.trim(),
+      description: formDesc.trim(),
+      questionCount: formCount,
+      dueAt: formDue ? new Date(formDue).toISOString() : null,
+    })
 
-    // Create assignment
-    const { data: assignment, error: aErr } = await supabase
-      .from('assignments')
-      .insert({
-        class_section_id: selectedSection,
-        created_by: tp.id,
-        title: formTitle.trim(),
-        description: formDesc.trim(),
-        question_count: formCount,
-        due_at: formDue || null,
-      })
-      .select()
-      .single()
-
-    if (aErr) { setError(aErr.message); setSubmitting(false); return }
+    if (assignmentError || !assignment?.id) {
+      setError(assignmentError?.message || 'Failed to create assignment.')
+      setSubmitting(false)
+      return
+    }
 
     // Randomly select questions
-    const shuffled = [...questions].sort(() => Math.random() - 0.5).slice(0, formCount)
-    const qRecords = shuffled.map((q) => ({ assignment_id: assignment.id, question_id: q.id }))
-    await supabase.from('assignment_questions').insert(qRecords)
+    const shuffledQuestionIds = [...questions]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, formCount)
+      .map((q) => q.id)
+
+    if (shuffledQuestionIds.length > 0) {
+      const { error: linkError } = await linkQuestionsToAssignment(assignment.id, shuffledQuestionIds)
+      if (linkError) {
+        setError(linkError.message || 'Assignment created, but linking questions failed.')
+      }
+    }
 
     setFormTitle(''); setFormDesc(''); setFormDue(''); setFormCount(5)
     setShowForm(false)
@@ -102,20 +106,19 @@ export default function TeacherAssignments() {
 
   async function handleAddQuestion() {
     if (!qText.trim()) return
-    const { data: { user } } = await supabase.auth.getUser()
-    const { data: tp } = await supabase
-      .from('teacher_profiles')
-      .select('id')
-      .eq('profile_id', user.id)
-      .single()
-
-    await supabase.from('question_bank').insert({
-      class_section_id: selectedSection,
-      created_by: tp.id,
-      question_text: qText.trim(),
+    setError(null)
+    const { error: addError } = await addQuestion({
+      classSectionId: selectedSection,
+      questionText: qText.trim(),
       topic: qTopic.trim() || null,
       difficulty: qDifficulty,
     })
+
+    if (addError) {
+      setError(addError.message || 'Failed to add question.')
+      return
+    }
+
     setQText(''); setQTopic(''); setQDifficulty('medium')
     setShowQForm(false)
     await loadQuestions()
@@ -241,11 +244,13 @@ export default function TeacherAssignments() {
                             )}
                           </div>
                           <span className="text-xs text-gray-400 shrink-0 ml-4">
-                            {a.due_at ? `Due ${new Date(a.due_at).toLocaleDateString()}` : 'No due date'}
+                            {(a.dueAt || a.due_at)
+                              ? `Due ${new Date(a.dueAt || a.due_at).toLocaleDateString()}`
+                              : 'No due date'}
                           </span>
                         </div>
                         <p className="text-xs text-gray-400">
-                          {a.question_count} questions · Created {new Date(a.created_at).toDateString()}
+                          {(a.questionCount ?? a.question_count ?? 0)} questions · Created {new Date(a.createdAt || a.created_at).toDateString()}
                         </p>
                       </div>
                     ))}
