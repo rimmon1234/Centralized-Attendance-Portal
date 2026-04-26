@@ -69,6 +69,13 @@ function normalizeDepartment(value) {
   if (compact === 'EE' || compact.includes('ELECTRICAL')) return 'EE'
   if (compact === 'ME' || compact.includes('MECHANICAL')) return 'ME'
   if (compact === 'CE' || compact.includes('CIVIL')) return 'CE'
+  if (compact === 'AEIE') return 'AEIE'
+  if (compact === 'CSBS') return 'CSBS'
+  if (compact === 'CSDS') return 'CSDS'
+  if (compact === 'AIML') return 'AIML'
+  if (compact === 'CHE' || compact.includes('CHEMICAL')) return 'ChE'
+  if (compact === 'MATHEMATICS' || compact.includes('MATH')) return 'Mathematics'
+  if (compact === 'PHYSICS') return 'Physics'
 
   return compact
 }

@@ -31,6 +31,13 @@ function normalizeDepartment(value) {
   if (compact === 'EE' || compact.includes('ELECTRICAL')) return 'EE'
   if (compact === 'ME' || compact.includes('MECHANICAL')) return 'ME'
   if (compact === 'CE' || compact.includes('CIVIL')) return 'CE'
+  if (compact === 'AEIE') return 'AEIE'
+  if (compact === 'CSBS') return 'CSBS'
+  if (compact === 'CSDS') return 'CSDS'
+  if (compact === 'AIML') return 'AIML'
+  if (compact === 'CHE' || compact.includes('CHEMICAL')) return 'ChE'
+  if (compact === 'MATHEMATICS' || compact.includes('MATH')) return 'Mathematics'
+  if (compact === 'PHYSICS') return 'Physics'
 
   return compact
 }
@@ -43,7 +50,7 @@ function normalizeSection(value) {
 function getDepartmentFromEmail(email) {
   if (!email) return null
   const localPart = email.split('@')[0].toUpperCase()
-  const DEPARTMENTS = ['CSE', 'IT', 'ECE', 'EE', 'ME', 'CE']
+  const DEPARTMENTS = ['CSE', 'IT', 'ECE', 'EE', 'ME', 'CE', 'AEIE', 'CSBS', 'CSDS', 'AIML', 'ChE', 'Mathematics', 'Physics']
   return DEPARTMENTS.find(d => d === localPart) || null
 }
 
@@ -223,13 +230,13 @@ router.get('/student', async (req, res) => {
     const { data, error } = await req.supabase
       .from('student_profiles')
       .select(`
-        *,
-        profiles (
-          full_name,
-          email,
-          college_name
-        )
-      `)
+        *,
+        profiles (
+          full_name,
+          email,
+          college_name
+        )
+      `)
       .eq('profile_id', req.user.id)
       .single()
 
@@ -247,13 +254,13 @@ router.get('/teacher', async (req, res) => {
     const { data, error } = await req.supabase
       .from('teacher_profiles')
       .select(`
-        *,
-        profiles (
-          full_name,
-          email,
-          college_name
-        )
-      `)
+        *,
+        profiles (
+          full_name,
+          email,
+          college_name
+        )
+      `)
       .eq('profile_id', req.user.id)
       .single()
 
@@ -499,14 +506,14 @@ router.get('/enrolled-sections', async (req, res) => {
     const { data, error } = await req.supabase
       .from('enrollments')
       .select(`
-        *,
-        class_sections (
-          *,
-          courses (
-            id, code, name, department, semester
-          )
-        )
-      `)
+        *,
+        class_sections (
+          *,
+          courses (
+            id, code, name, department, semester
+          )
+        )
+      `)
       .eq('student_id', studentProfile.id)
 
     if (error) return res.status(400).json({ error: error.message })
@@ -597,12 +604,12 @@ router.get('/sections/:id/students', async (req, res) => {
     const { data, error } = await db
       .from('enrollments')
       .select(`
-        *,
-        student_profiles (
-          id, roll_number, year_of_study, section, department,
-          profiles ( full_name, email )
-        )
-      `)
+        *,
+        student_profiles (
+          id, roll_number, year_of_study, section, department,
+          profiles ( full_name, email )
+        )
+      `)
       .eq('class_section_id', req.params.id)
       .order('student_profiles(roll_number)', { ascending: true })
 

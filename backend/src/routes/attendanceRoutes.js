@@ -392,6 +392,7 @@ async function buildAttendanceDetails(supabase, studentId, sessionType) {
       class_section_id,
       session_date,
       session_type,
+      time_slot,
       teacher_id,
       teacher_profiles (
         id,
@@ -507,9 +508,11 @@ async function buildAttendanceDetails(supabase, studentId, sessionType) {
       ? `${formatTime(schedule.start)}–${formatTime(schedule.end)}`
       : ''
 
+    const sessionTimeStr = session.time_slot || timeStr
+
     subjectMap[class_section_id].teachers[teacherKey].records.push({
       date: dateStr,
-      time: timeStr,
+      time: sessionTimeStr,
       status: recordMap[session.id] ?? 'absent',
     })
   }
@@ -528,7 +531,7 @@ async function buildAttendanceDetails(supabase, studentId, sessionType) {
 // POST /api/v1/attendance/sessions — create a new attendance session
 router.post('/sessions', async (req, res) => {
   try {
-    const { classSectionId, sessionType = 'regular' } = req.body
+    const { classSectionId, sessionType = 'lecture', timeSlot = '' } = req.body
 
     // Validate session type
     if (!VALID_SESSION_TYPES.includes(sessionType)) {
@@ -553,20 +556,41 @@ router.post('/sessions', async (req, res) => {
       .single()
 
     if (!assignment) {
-      return res.status(403).json({ error: 'You are not assigned to this class section' })
+      // Check if they are assigned as a specific teacher for a block in class_schedules
+      const { data: scheduleAsgn } = await req.supabase
+        .from('class_schedules')
+        .select('id')
+        .eq('teacher_id', teacherProfile.id)
+        .eq('class_section_id', classSectionId)
+        .limit(1)
+
+      if (!scheduleAsgn || scheduleAsgn.length === 0) {
+        return res.status(403).json({ error: 'You are not assigned to this class section' })
+      }
     }
 
-    // Block duplicate sessions for the same date
+    // Block duplicate sessions for the same date and time slot
     const today = new Date().toISOString().split('T')[0]
-    const { data: existing } = await req.supabase
+    let existingQuery = req.supabase
       .from('attendance_sessions')
       .select('id')
       .eq('class_section_id', classSectionId)
       .eq('session_date', today)
-      .single()
+      .eq('session_type', sessionType)
+
+    if (timeSlot) {
+      existingQuery = existingQuery.eq('time_slot', timeSlot)
+    } else {
+      // If no timeSlot provided, we still check for any session of this type for today
+      // to maintain backward compatibility, but we might want to allow it if we want multiple
+      // untimed sessions. For now, let's keep it strict if no slot provided.
+      existingQuery = existingQuery.is('time_slot', null)
+    }
+
+    const { data: existing } = await existingQuery.maybeSingle()
 
     if (existing) {
-      return res.status(409).json({ data: existing, error: 'Session already exists for today' })
+      return res.status(409).json({ data: existing, error: 'Session already exists for this time slot today' })
     }
 
     const { data, error } = await req.supabase
@@ -576,6 +600,7 @@ router.post('/sessions', async (req, res) => {
         teacher_id: teacherProfile.id,
         session_date: today,
         session_type: sessionType,
+        time_slot: timeSlot || null
       })
       .select()
       .single()
