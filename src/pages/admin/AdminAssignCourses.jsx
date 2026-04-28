@@ -4,6 +4,7 @@ import { apiFetch } from '../../lib/api'
 import { formatCohort } from '../../lib/format'
 
 export default function AdminAssignCourses() {
+  const TEACHER_WEEKLY_HOURS_LIMIT = 15
   const [teachers, setTeachers] = useState([])
   const [sections, setSections] = useState([])
   const [allCohorts, setAllCohorts] = useState([])
@@ -15,6 +16,8 @@ export default function AdminAssignCourses() {
   const [selectedSection, setSelectedSection] = useState('')
   const [courses, setCourses] = useState([])
   const [selectedCourse, setSelectedCourse] = useState('')
+  const [selectedTeacherHours, setSelectedTeacherHours] = useState(0)
+  const [selectedTeacherOverloaded, setSelectedTeacherOverloaded] = useState(false)
 
   useEffect(() => {
     fetchTeachers()
@@ -36,6 +39,7 @@ export default function AdminAssignCourses() {
   useEffect(() => {
     if (selectedTeacher) {
       fetchTeacherAssignments()
+      fetchSelectedTeacherWorkload()
     }
   }, [selectedTeacher])
 
@@ -100,8 +104,33 @@ export default function AdminAssignCourses() {
     }
   }
 
+  async function fetchSelectedTeacherWorkload() {
+    if (!selectedTeacher) {
+      setSelectedTeacherHours(0)
+      setSelectedTeacherOverloaded(false)
+      return
+    }
+    try {
+      const resp = await apiFetch(`/api/v1/admin/teachers/workload`)
+      const rows = resp.data || []
+      const row = rows.find(r => String(r.teacherId) === String(selectedTeacher))
+      const hours = row?.totalHours || 0
+      setSelectedTeacherHours(hours)
+      setSelectedTeacherOverloaded(hours > TEACHER_WEEKLY_HOURS_LIMIT)
+    } catch (err) {
+      console.error('Failed to fetch teacher workload:', err)
+      setSelectedTeacherHours(0)
+      setSelectedTeacherOverloaded(false)
+    }
+  }
+
   async function handleAssignCourse() {
     if (!selectedTeacher || !selectedSection) return
+
+    if (selectedTeacherOverloaded) {
+      setError(`Cannot assign: teacher's current workload is ${selectedTeacherHours}h which exceeds the ${TEACHER_WEEKLY_HOURS_LIMIT}h/week limit.`)
+      return
+    }
 
     try {
       setLoading(true)
@@ -193,6 +222,11 @@ export default function AdminAssignCourses() {
               </option>
             ))}
           </select>
+          {selectedTeacher && selectedTeacherOverloaded && (
+            <div className="mt-2 px-3 py-2 rounded-lg text-sm font-semibold" style={{ backgroundColor: '#FFCB08', color: '#000000', border: '1px solid #000000' }}>
+              Cannot assign: this teacher already has {selectedTeacherHours}h scheduled (limit {TEACHER_WEEKLY_HOURS_LIMIT}h/week).
+            </div>
+          )}
         </div>
 
         {selectedTeacher && (

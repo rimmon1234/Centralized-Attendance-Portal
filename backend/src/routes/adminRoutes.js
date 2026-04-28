@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { supabaseAdmin } from '../lib/supabase.js'
 
 const router = Router()
+const TEACHER_WEEKLY_HOURS_LIMIT = 15
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 function normalizeYear(value) {
@@ -56,6 +57,157 @@ function slotsOverlap(slot1, slot2) {
   const [s2, e2] = parse(slot2)
   return Math.max(s1, s2) < Math.min(e1, e2)
 }
+
+function getSlotDurationHours(timeSlot) {
+  if (!timeSlot || typeof timeSlot !== 'string' || !timeSlot.includes('-')) return 1
+
+  const toMinutes = (value) => {
+    const [h, m] = String(value || '').split(':').map(Number)
+    if (Number.isNaN(h) || Number.isNaN(m)) return null
+    return h * 60 + m
+  }
+
+  const [startRaw, endRaw] = timeSlot.split('-').map((v) => v.trim())
+  const start = toMinutes(startRaw)
+  const end = toMinutes(endRaw)
+
+  if (start == null || end == null || end <= start) return 1
+  return (end - start) / 60
+}
+
+function normalizeRoomNumber(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+}
+
+function getTeacherFullName(profileRelation) {
+  if (!profileRelation) return null
+  if (Array.isArray(profileRelation)) {
+    return profileRelation[0]?.full_name || profileRelation[0]?.fullName || null
+  }
+
+  return profileRelation.full_name || profileRelation.fullName || null
+}
+
+async function getTeacherWorkloadMap(db, { excludeSectionIds = [] } = {}) {
+  const excludedSectionIds = [...new Set((excludeSectionIds || []).filter(Boolean))]
+  let query = db
+    .from('class_schedules')
+    .select('teacher_id, time_slot, class_section_id')
+    .not('teacher_id', 'is', null)
+
+  const { data: scheduleRows, error: scheduleError } = await query
+  if (scheduleError) throw scheduleError
+
+  const workloadByTeacher = {}
+  // Normalize teacher identifiers: some legacy rows may store profile_id instead of teacher_profiles.id
+  const rawTeacherIds = Array.from(new Set((scheduleRows || []).map(r => r.teacher_id).filter(Boolean)))
+
+  // Fetch teacher_profiles rows where either profile_id or id matches rawTeacherIds
+  const mapping = {} // maps rawId -> resolved teacher_profiles.id
+  if (rawTeacherIds.length > 0) {
+    try {
+      const { data: byProfile } = await db
+        .from('teacher_profiles')
+        .select('id, profile_id')
+        .in('profile_id', rawTeacherIds)
+
+      const { data: byId } = await db
+        .from('teacher_profiles')
+        .select('id, profile_id')
+        .in('id', rawTeacherIds)
+
+      for (const t of (byProfile || [])) {
+        if (t.profile_id) mapping[String(t.profile_id)] = String(t.id)
+      }
+      for (const t of (byId || [])) {
+        if (t.id) mapping[String(t.id)] = String(t.id)
+      }
+    } catch (err) {
+      // If resolving fails, fall back to using raw IDs directly
+      console.warn('[getTeacherWorkloadMap] failed to normalize teacher ids:', err.message || err)
+    }
+  }
+
+  for (const row of scheduleRows || []) {
+    if (excludedSectionIds.length > 0 && excludedSectionIds.includes(row.class_section_id)) {
+      continue
+    }
+
+    const raw = row.teacher_id
+    if (!raw) continue
+    const teacherId = mapping[String(raw)] || String(raw)
+    if (!workloadByTeacher[teacherId]) workloadByTeacher[teacherId] = 0
+    workloadByTeacher[teacherId] += getSlotDurationHours(row.time_slot)
+  }
+
+  return workloadByTeacher
+}
+
+async function getTeacherDirectory(db, teacherIds = []) {
+  const ids = [...new Set((teacherIds || []).filter(Boolean))]
+  if (ids.length === 0) return {}
+
+  const { data: teacherRows, error: teacherRowsError } = await db
+    .from('teacher_profiles')
+    .select('id, employee_id, profiles (full_name)')
+    .in('id', ids)
+
+  if (teacherRowsError) throw teacherRowsError
+
+  return Object.fromEntries(
+    (teacherRows || []).map((t) => [
+      t.id,
+      {
+        name: getTeacherFullName(t.profiles) || 'Unknown Teacher',
+        employeeId: t.employee_id || null,
+      },
+    ])
+  )
+}
+
+/**
+ * GET /api/v1/admin/teachers/workload
+ * Get current active weekly workload per teacher.
+ * Query: ?excludeSectionIds=sectionId1,sectionId2
+ */
+router.get('/teachers/workload', async (req, res) => {
+  try {
+    const db = supabaseAdmin || req.supabase
+    const excludeSectionIds = String(req.query.excludeSectionIds || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+
+    const workloadByTeacher = await getTeacherWorkloadMap(db, {
+      excludeSectionIds,
+    })
+
+    const teacherIds = Object.keys(workloadByTeacher)
+    const teacherDirectory = await getTeacherDirectory(db, teacherIds)
+
+    const data = teacherIds
+      .map((teacherId) => ({
+        teacherId,
+        name: teacherDirectory[teacherId]?.name || 'Unknown Teacher',
+        employeeId: teacherDirectory[teacherId]?.employeeId || null,
+        totalHours: Number((workloadByTeacher[teacherId] || 0).toFixed(2)),
+      }))
+      .sort((a, b) => b.totalHours - a.totalHours)
+
+    return res.json({
+      data,
+      meta: {
+        thresholdHours: TEACHER_WEEKLY_HOURS_LIMIT,
+      },
+    })
+  } catch (err) {
+    console.error('GET /admin/teachers/workload error:', err)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+})
 /**
  * GET /api/v1/admin/stats
  * Get overall system statistics
@@ -1366,20 +1518,7 @@ router.put('/schedules/replace', async (req, res) => {
       return res.status(400).json({ error: 'routineId and schedules array are required' })
     }
 
-    // 1. Delete ALL existing schedules for this routine.
-    //    We delete by routine_id alone (not filtered by sectionIds) because
-    //    previous saves may have auto-created new class_sections that the
-    //    frontend doesn't know about yet.
-    const { error: deleteError } = await db
-      .from('class_schedules')
-      .delete()
-      .eq('routine_id', routineId)
-
-    if (deleteError) {
-      return res.status(400).json({ error: deleteError.message })
-    }
-
-    // 2. Insert new schedules
+    // 1. Validate and prepare schedules before mutating DB.
     if (schedules.length > 0) {
       if ((!sectionIds || sectionIds.length === 0) && (!year || !section)) {
         return res.status(400).json({ error: 'Either sectionIds or year/section must be provided' })
@@ -1479,7 +1618,7 @@ router.put('/schedules/replace', async (req, res) => {
           const s1 = processedSchedules[i]
           const s2 = processedSchedules[j]
           if (s1.day === s2.day && slotsOverlap(s1.time_slot, s2.time_slot)) {
-            const roomConflict = s1.room_number && s1.room_number.trim().toLowerCase() === s2.room_number?.trim().toLowerCase()
+            const roomConflict = normalizeRoomNumber(s1.room_number) && normalizeRoomNumber(s1.room_number) === normalizeRoomNumber(s2.room_number)
             const teacherConflict = s1.teacher_id && s1.teacher_id === s2.teacher_id
 
             if (roomConflict && teacherConflict) {
@@ -1503,7 +1642,7 @@ router.put('/schedules/replace', async (req, res) => {
         for (let e of ext || []) {
           if (s.day === e.day && slotsOverlap(s.time_slot, e.time_slot)) {
             const label = e.class_sections ? `${e.class_sections.department} · Year ${e.class_sections.year_of_study} · Section ${e.class_sections.section}` : 'Another routine'
-            const roomConflict = s.room_number && s.room_number.trim().toLowerCase() === e.room_number?.trim().toLowerCase()
+            const roomConflict = normalizeRoomNumber(s.room_number) && normalizeRoomNumber(s.room_number) === normalizeRoomNumber(e.room_number)
             const teacherConflict = s.teacher_id && s.teacher_id === e.teacher_id
 
             if (roomConflict && teacherConflict) {
@@ -1517,6 +1656,78 @@ router.put('/schedules/replace', async (req, res) => {
         }
       }
 
+      // 3. Teacher workload threshold check across all sections/years, excluding only the cohort being replaced.
+      const currentSectionIds = processedSchedules.map((row) => row.class_section_id)
+      const workloadByTeacher = await getTeacherWorkloadMap(db, { excludeSectionIds: currentSectionIds })
+
+      // Normalize teacher IDs in processedSchedules (handle profile_id vs teacher_profiles.id)
+      const procTeacherRawIds = Array.from(new Set(processedSchedules.map(r => r.teacher_id).filter(Boolean)))
+      const procMapping = {}
+      if (procTeacherRawIds.length > 0) {
+        try {
+          const { data: byProfile } = await db
+            .from('teacher_profiles')
+            .select('id, profile_id')
+            .in('profile_id', procTeacherRawIds)
+
+          const { data: byId } = await db
+            .from('teacher_profiles')
+            .select('id, profile_id')
+            .in('id', procTeacherRawIds)
+
+          for (const t of (byProfile || [])) procMapping[String(t.profile_id)] = String(t.id)
+          for (const t of (byId || [])) procMapping[String(t.id)] = String(t.id)
+        } catch (err) {
+          console.warn('[schedules/replace] failed to normalize processed teacher ids:', err.message || err)
+        }
+      }
+
+      for (const row of processedSchedules) {
+        if (!row.teacher_id) continue
+        const resolved = procMapping[String(row.teacher_id)] || String(row.teacher_id)
+        if (!workloadByTeacher[resolved]) workloadByTeacher[resolved] = 0
+        workloadByTeacher[resolved] += getSlotDurationHours(row.time_slot)
+      }
+
+      const overloadedTeacherIds = Object.keys(workloadByTeacher)
+        .filter((teacherId) => workloadByTeacher[teacherId] > TEACHER_WEEKLY_HOURS_LIMIT)
+
+      if (overloadedTeacherIds.length > 0) {
+        const teacherMap = await getTeacherDirectory(db, overloadedTeacherIds)
+
+        const overloadedTeachers = overloadedTeacherIds
+          .map((teacherId) => ({
+            teacherId,
+            name: teacherMap[teacherId]?.name || 'Unknown Teacher',
+            employeeId: teacherMap[teacherId]?.employeeId || null,
+            totalHours: Number(workloadByTeacher[teacherId].toFixed(2)),
+          }))
+          .sort((a, b) => b.totalHours - a.totalHours)
+
+        const details = overloadedTeachers
+          .map((t) => `${t.name}${t.employeeId ? ` (${t.employeeId})` : ''}: ${t.totalHours}h`)
+          .join(', ')
+
+        return res.status(409).json({
+          error: `Teacher workload limit exceeded (max ${TEACHER_WEEKLY_HOURS_LIMIT}h/week). ${details}`,
+          code: 'TEACHER_WORKLOAD_EXCEEDED',
+          data: {
+            thresholdHours: TEACHER_WEEKLY_HOURS_LIMIT,
+            overloadedTeachers,
+          },
+        })
+      }
+
+      // 4. Now mutate DB only after all validations pass.
+      const { error: deleteError } = await db
+        .from('class_schedules')
+        .delete()
+        .eq('routine_id', routineId)
+
+      if (deleteError) {
+        return res.status(400).json({ error: deleteError.message })
+      }
+
       const { data, error: insertError } = await db
         .from('class_schedules')
         .insert(processedSchedules)
@@ -1527,6 +1738,16 @@ router.put('/schedules/replace', async (req, res) => {
       }
 
       return res.status(200).json({ data, success: true })
+    }
+
+    // No schedules passed: clear current routine schedules safely.
+    const { error: deleteError } = await db
+      .from('class_schedules')
+      .delete()
+      .eq('routine_id', routineId)
+
+    if (deleteError) {
+      return res.status(400).json({ error: deleteError.message })
     }
 
     return res.status(200).json({ data: [], success: true })

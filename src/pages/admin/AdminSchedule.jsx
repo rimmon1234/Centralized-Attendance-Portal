@@ -9,6 +9,7 @@ const SECTIONS = ['A', 'B', 'C']
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 const HOURS = Array.from({ length: 9 }, (_, i) => ({ start: 9 + i, label: `${9 + i}:00` }))
 const TOTAL_HOURS = HOURS.length
+const TEACHER_WEEKLY_HOURS_LIMIT = 15
 
 const COURSE_COLORS = [
   'bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 border-blue-200 dark:border-blue-800/50',
@@ -40,7 +41,6 @@ export default function AdminSchedule() {
   const [routines, setRoutines] = useState([])
   const [selectedRoutineId, setSelectedRoutineId] = useState('')
   const [allCourses, setAllCourses] = useState([])
-  const [courseSearch, setCourseSearch] = useState('')
   const [defaultRoom, setDefaultRoom] = useState('')
   const [gridSchedules, setGridSchedules] = useState([])
   const [loading, setLoading] = useState(false)
@@ -50,6 +50,10 @@ export default function AdminSchedule() {
   const [resizing, setResizing] = useState(null)
   const [editingBlock, setEditingBlock] = useState(null)
   const [allTeachers, setAllTeachers] = useState([])
+  const [teacherBaseWorkloadMap, setTeacherBaseWorkloadMap] = useState({})
+  const [teacherBaseWorkloadDetailsMap, setTeacherBaseWorkloadDetailsMap] = useState({})
+  const [teacherWorkloadWarning, setTeacherWorkloadWarning] = useState(null)
+  const [actionWarning, setActionWarning] = useState(null)
   const editPopoverRef = useRef(null)
   const trackRefs = useRef({})
 
@@ -59,24 +63,18 @@ export default function AdminSchedule() {
     fetchSections();
     fetchTeachers();
   }, [])
-  async function fetchAllCourses() {
-    try {
-      const data = await apiFetch('/api/v1/admin/courses')
-      setAllCourses(data.data || [])
-    } catch (err) { console.error('Error fetching courses:', err) }
-  }
-
 
   // Auto-clear toast messages
   useEffect(() => {
-    if (error || successMsg) {
+    if (error || successMsg || actionWarning) {
       const timer = setTimeout(() => {
         setError(null)
         setSuccessMsg(null)
+        setActionWarning(null)
       }, 5000)
       return () => clearTimeout(timer)
     }
-  }, [error, successMsg])
+  }, [error, successMsg, actionWarning])
 
   useEffect(() => {
     if (selectedYear && selectedSection) {
@@ -100,6 +98,23 @@ export default function AdminSchedule() {
     else { setGridSchedules([]) }
   }, [selectedRoutineId, routines.length, selectedYear, selectedSection])
 
+  useEffect(() => {
+    if (!selectedRoutineId || !cohort?.classSections?.length) {
+      setTeacherBaseWorkloadMap({})
+      setTeacherBaseWorkloadDetailsMap({})
+      return
+    }
+
+    fetchTeacherBaseWorkloads(cohort.classSections.map((section) => section.id))
+  }, [selectedRoutineId, cohort])
+
+  async function fetchAllCourses() {
+    try {
+      const data = await apiFetch('/api/v1/admin/courses')
+      setAllCourses(data.data || [])
+    } catch (err) { console.error('Error fetching courses:', err) }
+  }
+
   async function fetchSections() {
     try {
       setLoading(true)
@@ -115,6 +130,86 @@ export default function AdminSchedule() {
     } catch (err) { console.error('Error fetching teachers:', err) }
   }
 
+  async function fetchTeacherBaseWorkloads(sectionIds = []) {
+    try {
+      const scopedSectionIds = Array.isArray(sectionIds) ? sectionIds.filter(Boolean) : []
+      const querySuffix = scopedSectionIds.length > 0 ? `?excludeSectionIds=${encodeURIComponent(scopedSectionIds.join(','))}` : ''
+      const response = await apiFetch(`/api/v1/admin/teachers/workload${querySuffix}`, {
+        cache: false,
+        forceRefresh: true,
+      })
+
+      const map = {}
+      const detailsMap = {}
+      for (const row of response.data || []) {
+        map[row.teacherId] = row.totalHours || 0
+        detailsMap[row.teacherId] = {
+          name: row.name || 'Unknown Teacher',
+          employeeId: row.employeeId || null,
+          totalHours: row.totalHours || 0,
+        }
+      }
+      setTeacherBaseWorkloadMap(map)
+      setTeacherBaseWorkloadDetailsMap(detailsMap)
+      return { map, detailsMap }
+    } catch (err) {
+      console.error('Error fetching teacher workloads:', err)
+      setTeacherBaseWorkloadMap({})
+      setTeacherBaseWorkloadDetailsMap({})
+      return { map: {}, detailsMap: {} }
+    }
+  }
+
+  const buildOverloadedTeachersPreview = (baseWorkloadMap, baseWorkloadDetailsMap, schedules) => {
+    const loadMap = { ...(baseWorkloadMap || {}) }
+    const teacherMetaMap = { ...(baseWorkloadDetailsMap || {}) }
+
+    for (const block of schedules || []) {
+      const teacherId = block.teacherId
+      if (!teacherId) continue
+      const duration = Number.isFinite(block.duration) && block.duration > 0 ? block.duration : 1
+      if (!loadMap[teacherId]) loadMap[teacherId] = 0
+      loadMap[teacherId] += duration
+    }
+
+    const teacherNameMap = Object.fromEntries(
+      allTeachers
+        .map((t) => [
+          t.teacherDetails?.id,
+          {
+            name: t.fullName || t.full_name || t.name || t.email || 'Unknown Teacher',
+            employeeId: t.teacherDetails?.employeeId || t.teacherDetails?.employee_id || null,
+          },
+        ])
+        .filter(([id]) => Boolean(id))
+    )
+
+    return Object.entries(loadMap)
+      .filter(([, hours]) => hours > TEACHER_WEEKLY_HOURS_LIMIT)
+      .map(([teacherId, hours]) => ({
+        teacherId,
+        name: teacherMetaMap[teacherId]?.name || teacherNameMap[teacherId]?.name || 'Unknown Teacher',
+        employeeId: teacherMetaMap[teacherId]?.employeeId || teacherNameMap[teacherId]?.employeeId || null,
+        totalHours: Number(hours.toFixed(2)),
+      }))
+      .sort((a, b) => b.totalHours - a.totalHours)
+  }
+
+  const overloadedTeachersPreview = buildOverloadedTeachersPreview(teacherBaseWorkloadMap, teacherBaseWorkloadDetailsMap, gridSchedules)
+
+  useEffect(() => {
+    if (overloadedTeachersPreview.length === 0) {
+      setTeacherWorkloadWarning(null)
+      return
+    }
+
+    const details = overloadedTeachersPreview
+      .map((t) => `${t.name}${t.employeeId ? ` (${t.employeeId})` : ''}: ${t.totalHours}h`)
+      .join(', ')
+
+    setTeacherWorkloadWarning(`Teacher workload threshold exceeded (max ${TEACHER_WEEKLY_HOURS_LIMIT}h/week): ${details}`)
+  }, [overloadedTeachersPreview])
+
   function updateCohort() {
     const matched = allSections.filter(s => {
       const dbYear = String(s.yearOfStudy || '').toLowerCase()
@@ -127,11 +222,16 @@ export default function AdminSchedule() {
     })
 
     const key = `Year ${selectedYear}-Sec ${selectedSection}`
+    // Determine department for this cohort: if all matched sections share a department, use it.
+    const departments = Array.from(new Set(matched.map(s => s.department).filter(Boolean)))
+    const cohortDept = departments.length === 1 ? departments[0] : null
+
     setCohort({
       id: key,
       yearOfStudy: parseInt(selectedYear),
       section: selectedSection,
       label: `Section ${selectedSection} (Year ${selectedYear})`,
+      department: cohortDept,
       classSections: matched.map(s => ({
         id: s.id,
         courseId: s.courseId,
@@ -164,11 +264,10 @@ export default function AdminSchedule() {
     } catch (err) { setError('Failed to load routines') } finally { setLoading(false) }
   }
 
-  async function fetchSchedules(forceRefresh = false) {
+  async function fetchSchedules() {
     // Only return if we have routines but none is selected
     if (routines.length > 0 && !selectedRoutineId) return
     if (!selectedYear || !selectedSection) return
-    if (!cohort) return
     const yearNum = parseInt(selectedYear)
     try {
       setLoading(true)
@@ -177,17 +276,14 @@ export default function AdminSchedule() {
       const sectionIds = cohort?.classSections?.map(cs => cs.id).join(',')
       const url = `/api/v1/admin/schedules?year=${yearNum}&section=${selectedSection}${sectionIds ? `&sectionIds=${sectionIds}` : ''}${selectedRoutineId ? `&routineId=${selectedRoutineId}` : ''}`
       const data = await apiFetch(url, {
-        cache: true,
-        cacheTtlMs: 2 * 60 * 1000,
-        staleWindowMs: 5 * 60 * 1000,
-        staleWhileRevalidate: true,
-        forceRefresh,
+        cache: false,
+        forceRefresh: true,
       })
       const formatted = (data.data || []).map(s => {
         const timeParts = s.timeSlot.split('-')
         const startHour = parseInt(timeParts[0].split(':')[0])
         const endHour = timeParts.length > 1 ? parseInt(timeParts[1].split(':')[0]) : startHour + 1
-        const sectionInfo = (cohort?.classSections || []).find(c => c.id === s.classSectionId) || {}
+        const sectionInfo = cohort.classSections.find(c => c.id === s.classSectionId) || {}
         const courseCode = (s.courses?.code || s.course?.code || '').trim().toUpperCase()
         const isSpecial = ['LIB', 'REM', 'LUNCH'].includes(courseCode)
         let specialColor = isSpecial ? (SPECIAL_BLOCKS.find(sb => sb.code === courseCode)?.specialColor || null) : null
@@ -260,12 +356,31 @@ export default function AdminSchedule() {
   async function handleSave() {
     if (!cohort) return
     if (!cohort || !selectedRoutineId) return
+    const freshWorkloadContext = await fetchTeacherBaseWorkloads(cohort.classSections.map((section) => section.id))
+    const freshOverloadedTeachers = buildOverloadedTeachersPreview(freshWorkloadContext.map, freshWorkloadContext.detailsMap, gridSchedules)
+
+    if (freshOverloadedTeachers.length > 0) {
+      const details = freshOverloadedTeachers
+        .map((t) => `${t.name}${t.employeeId ? ` (${t.employeeId})` : ''}: ${t.totalHours}h`)
+        .join(', ')
+      setTeacherWorkloadWarning(`Teacher workload threshold exceeded (max ${TEACHER_WEEKLY_HOURS_LIMIT}h/week): ${details}`)
+      setError(`Cannot save. Teacher workload limit exceeded (max ${TEACHER_WEEKLY_HOURS_LIMIT}h/week): ${details}`)
+      return
+    }
     try {
       setSaving(true); setError(null)
       const sectionIds = cohort.classSections.map(cs => cs.id)
       let payload = []
+      const missingRoomEntries = []
+
+      const normalizeRoomValue = (value) => String(value || '').trim()
+      const isValidRoomValue = (value) => {
+        const normalized = normalizeRoomValue(value)
+        return normalized.length > 0 && normalized.toLowerCase() !== 'tba'
+      }
+
       gridSchedules.forEach(s => {
-        const roomToSave = s.isSpecial ? (s.roomNumber || '') : (s.roomNumber || defaultRoom || 'TBA')
+        const roomToSave = s.isSpecial ? normalizeRoomValue(s.roomNumber) : normalizeRoomValue(s.roomNumber || defaultRoom)
         if (s.isSpecial) {
           // Special blocks map to ALL sections in the cohort
           cohort.classSections.forEach(cs => {
@@ -286,8 +401,17 @@ export default function AdminSchedule() {
             room_number: roomToSave,
             teacher_id: validTeacherId
           })
+
+          if (!isValidRoomValue(roomToSave)) {
+            missingRoomEntries.push(`${s.courseCode || 'Course'} on ${s.day} ${s.startHour}:00-${s.startHour + s.duration}:00`)
+          }
         }
       })
+
+      if (missingRoomEntries.length > 0) {
+        setError(`Cannot save. Assign room numbers for all lectures/labs before saving: ${missingRoomEntries.join(', ')}`)
+        return
+      }
 
       const body = {
         sectionIds,
@@ -295,13 +419,19 @@ export default function AdminSchedule() {
         schedules: payload,
         year: selectedYear,
         section: selectedSection,
-        adminDepartment: adminDepartment
+        adminDepartment: (cohort && cohort.department) ? cohort.department : adminDepartment
       }
       await apiFetch('/api/v1/admin/schedules/replace', { method: 'PUT', body: JSON.stringify(body) })
-      await fetchSchedules(true)
+      await fetchSchedules()
       setSuccessMsg('Schedule saved successfully!')
       setTimeout(() => setSuccessMsg(null), 3000)
-    } catch (err) { setError(err.message) } finally { setSaving(false) }
+    } catch (err) {
+      if (err?.message?.includes('TEACHER_WORKLOAD_EXCEEDED')) {
+        setError(err.message || 'Cannot save. Teacher workload threshold exceeded.')
+      } else {
+        setError(err.message)
+      }
+    } finally { setSaving(false) }
   }
 
   function handleRemove(tempId) {
@@ -314,56 +444,22 @@ export default function AdminSchedule() {
     setGridSchedules([])
   }
 
-  const resolveYearFromSemester = (semester) => {
-    const semNum = parseInt(semester, 10)
-    if (!Number.isFinite(semNum) || semNum <= 0) return null
-    return Math.ceil(semNum / 2)
+  // Build a courseId -> classSectionId map from the cohort
+  const cohortCourseMap = {}
+  if (cohort) {
+    cohort.classSections.forEach(cs => { cohortCourseMap[cs.courseId] = cs })
   }
 
-  const yearNumber = selectedYear ? parseInt(selectedYear, 10) : null
-
-  // Build palette items: cohort courses + year-matched courses (even if unassigned)
-  const paletteCourseItems = (cohort?.classSections || []).map(cs => ({
-    id: cs.id,
-    courseId: cs.courseId,
-    code: cs.code,
-    name: cs.name,
-    teacherName: cs.teacherName || '',
-    teachers: cs.teachers || [],
-    isSpecial: false,
-    isCohortCourse: true,
-    classSectionId: cs.id,
-  }))
-
-  const cohortCourseIds = new Set((cohort?.classSections || []).map(cs => cs.courseId))
-  const yearCourses = (allCourses || []).filter(c => {
-    if (!yearNumber) return false
-    const courseYear = resolveYearFromSemester(c.semester)
-    if (!courseYear || courseYear !== yearNumber) return false
-    return true
-  })
-
-  yearCourses.forEach(c => {
-    if (cohortCourseIds.has(c.id)) return
-    paletteCourseItems.push({
-      id: `course-${c.id}`,
-      courseId: c.id,
-      code: c.code,
-      name: c.name,
-      teacherName: '',
-      teachers: [],
-      isSpecial: false,
-      isCohortCourse: false,
-      classSectionId: null,
-    })
-  })
-
-  const searchValue = courseSearch.trim().toLowerCase()
-  const filteredPaletteCourses = paletteCourseItems.filter(item => {
-    if (!searchValue) return true
-    const haystack = `${item.code || ''} ${item.name || ''}`.toLowerCase()
-    return haystack.includes(searchValue)
-  })
+  // Build palette items: all courses + special blocks
+  const paletteItems = [
+    ...allCourses
+      .filter(c => !['LIB', 'REM', 'LUNCH'].includes((c.code || '').trim().toUpperCase()))
+      .map(c => {
+        const cohortInfo = cohortCourseMap[c.id]
+        return { id: cohortInfo?.id || `course-${c.id}`, courseId: c.id, code: c.code, name: c.name, teacherName: cohortInfo?.teacherName || '', teachers: cohortInfo?.teachers || [], isSpecial: false, isCohortCourse: !!cohortInfo, classSectionId: cohortInfo?.id || null }
+      }),
+    ...SPECIAL_BLOCKS
+  ]
 
   const handleDragStart = (e, item, source) => {
     e.dataTransfer.setData('application/json', JSON.stringify({ item, source }))
@@ -379,6 +475,34 @@ export default function AdminSchedule() {
     })
   }
 
+  const checkWorkloadExceeded = (teacherId, expectedDuration, ignoreTempId = null) => {
+    if (!teacherId || typeof teacherId !== 'string' || teacherId.length < 20) return null;
+    
+    let currentWorkload = teacherBaseWorkloadMap[teacherId] || 0;
+    
+    for (const block of gridSchedules) {
+      if (block.tempId === ignoreTempId) continue;
+      if (block.teacherId === teacherId) {
+        currentWorkload += (Number.isFinite(block.duration) && block.duration > 0 ? block.duration : 1);
+      }
+    }
+    
+    if (currentWorkload + expectedDuration > TEACHER_WEEKLY_HOURS_LIMIT) {
+      const teacherObj = teacherBaseWorkloadDetailsMap[teacherId] || null;
+      const fallbackTeacherObj = allTeachers.find(t => t.teacherDetails?.id === teacherId);
+      let tName = teacherObj?.name || (fallbackTeacherObj ? (fallbackTeacherObj.fullName || fallbackTeacherObj.full_name || fallbackTeacherObj.name) : null);
+      if (!tName) {
+        const fallbackObj = cohort?.classSections?.find(cs => cs.teachers?.some(t => t.id === teacherId));
+        if (fallbackObj) {
+          tName = fallbackObj.teachers.find(t => t.id === teacherId)?.name;
+        }
+      }
+      return { exceeded: true, name: tName || 'Unknown Teacher', limit: TEACHER_WEEKLY_HOURS_LIMIT };
+    }
+    
+    return null;
+  };
+
   const handleDrop = (e, dropDay, dropHour) => {
     e.preventDefault()
     try {
@@ -390,7 +514,17 @@ export default function AdminSchedule() {
       if (checkConflict(dropDay, dropHour, duration, source === 'grid' ? item.tempId : null)) {
         setError('Conflict: Overlapping classes'); setTimeout(() => setError(null), 3000); return
       }
+
+      const proposedTeacherId = (item.teachers && item.teachers.length === 1 && typeof item.teachers[0].id === 'string' && item.teachers[0].id.length > 20) ? item.teachers[0].id : null;
+
       if (source === 'palette') {
+        if (proposedTeacherId) {
+          const workloadCheck = checkWorkloadExceeded(proposedTeacherId, 1);
+          if (workloadCheck) {
+            setActionWarning(`Cannot assign: ${workloadCheck.name}'s workload exceeds ${workloadCheck.limit}h/week limit.`);
+            return;
+          }
+        }
         // Dropping is allowed for all items in the palette now
         setGridSchedules(prev => [...prev, {
           tempId: Math.random().toString(36).substr(2, 9),
@@ -399,7 +533,7 @@ export default function AdminSchedule() {
           roomNumber: defaultRoom || '', courseCode: item.code, courseName: item.name,
           teacherName: item.teacherName || 'Unassigned',
           teachers: item.teachers || [],
-          teacherId: (item.teachers && item.teachers.length === 1 && typeof item.teachers[0].id === 'string' && item.teachers[0].id.length > 20) ? item.teachers[0].id : null,
+          teacherId: proposedTeacherId,
           isSpecial: !!item.isSpecial,
           specialColor: item.specialColor || null
         }])
@@ -432,6 +566,15 @@ export default function AdminSchedule() {
           else return
         }
       }
+      // Check workload
+      const schedule = gridSchedules.find(s => s.tempId === resizing.tempId);
+      if (schedule && schedule.teacherId) {
+        const workloadCheck = checkWorkloadExceeded(schedule.teacherId, newDuration, resizing.tempId);
+        if (workloadCheck) {
+          if (!actionWarning) setActionWarning(`Cannot resize: ${workloadCheck.name}'s workload exceeds ${workloadCheck.limit}h/week limit.`);
+          return;
+        }
+      }
       setGridSchedules(prev => prev.map(s => s.tempId === resizing.tempId ? { ...s, duration: newDuration } : s))
     }
     const handleMouseUp = () => setResizing(null)
@@ -453,6 +596,15 @@ export default function AdminSchedule() {
 
         {/* Toast Notifications */}
         <div className="fixed top-6 right-6 z-[9999] flex flex-col gap-3 pointer-events-none">
+          {(teacherWorkloadWarning || actionWarning) && (
+            <div
+              className="animate-slide-in px-4 py-3 rounded-2xl text-sm font-bold shadow-2xl backdrop-blur-md flex items-center gap-3 pointer-events-auto border"
+              style={{ backgroundColor: '#FFCB08', color: '#000000', borderColor: '#000000' }}
+            >
+              <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v4m0 4h.01" /></svg>
+              {actionWarning || teacherWorkloadWarning}
+            </div>
+          )}
           {error && (
             <div className="animate-slide-in px-4 py-3 rounded-2xl bg-red-500/90 dark:bg-red-600/90 text-white text-sm font-bold shadow-2xl backdrop-blur-md flex items-center gap-3 pointer-events-auto border border-white/20">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
@@ -542,7 +694,7 @@ export default function AdminSchedule() {
                 {routines.find(r => r.id === selectedRoutineId)?.is_active ? 'Active Routine' : 'Set as Active'}
               </button>
             )}
-            <button onClick={handleSave} disabled={!selectedRoutineId || saving || loading} className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+            <button onClick={handleSave} disabled={!selectedRoutineId || saving || loading || overloadedTeachersPreview.length > 0} className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
               {saving ? 'Saving...' : 'Save Schedule'}
             </button>
             <button onClick={handleClearGrid} disabled={gridSchedules.length === 0} className="px-4 py-2 rounded-xl bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 text-xs font-medium transition-colors">
@@ -559,13 +711,6 @@ export default function AdminSchedule() {
             <div className="p-4 border-b border-gray-100 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-800/30">
               <h3 className="font-semibold text-gray-900 dark:text-white text-sm">Course Palette</h3>
               <p className="text-xs text-gray-500 mt-1">Drag onto the grid</p>
-              <input
-                type="text"
-                value={courseSearch}
-                onChange={(e) => setCourseSearch(e.target.value)}
-                placeholder="Search course"
-                className="mt-3 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-xs text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
             </div>
             <div className="p-3 overflow-y-auto custom-scrollbar flex-1 space-y-2">
               {/* Special blocks first */}
@@ -577,8 +722,8 @@ export default function AdminSchedule() {
                 </div>
               ))}
 
-              <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold px-1 pt-2">Year Courses</p>
-              {filteredPaletteCourses.map(item => (
+              <p className="text-[10px] uppercase tracking-wider text-gray-400 font-bold px-1 pt-2">All Courses</p>
+              {paletteItems.filter(p => !p.isSpecial).map(item => (
                 <div key={item.id} draggable onDragStart={(e) => handleDragStart(e, item, 'palette')} className={`p-2.5 rounded-xl border transition-shadow cursor-grab active:cursor-grabbing hover:shadow-md ${item.isCohortCourse ? getCourseColor(item.courseId) : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300'}`}>
                   <div className="flex items-center justify-between">
                     <div className="font-bold text-xs">{item.code}</div>
@@ -591,12 +736,7 @@ export default function AdminSchedule() {
                   </div>}
                 </div>
               ))}
-              {cohort && filteredPaletteCourses.length === 0 && (
-                <p className="text-xs text-gray-400 text-center py-4">No courses match this search.</p>
-              )}
-              {!cohort && (
-                <p className="text-xs text-gray-400 text-center py-4">Select a year and section to see courses.</p>
-              )}
+              {allCourses.length === 0 && <p className="text-sm text-gray-400 text-center py-4">Loading courses...</p>}
             </div>
           </div>
 
@@ -687,6 +827,11 @@ export default function AdminSchedule() {
                                         value={schedule.teacherId || ''}
                                         onChange={(e) => {
                                           const tId = e.target.value;
+                                          const workloadCheck = checkWorkloadExceeded(tId, schedule.duration, schedule.tempId);
+                                          if (workloadCheck) {
+                                            setActionWarning(`Cannot assign: ${workloadCheck.name}'s workload exceeds ${workloadCheck.limit}h/week limit.`);
+                                            return;
+                                          }
                                           const tObj = schedule.teachers.find(t => t.id === tId);
                                           setGridSchedules(prev => prev.map(s => s.tempId === schedule.tempId ? { ...s, teacherId: tId, teacherName: tObj?.name || '—' } : s));
                                         }}
@@ -702,6 +847,13 @@ export default function AdminSchedule() {
                                         value={schedule.teacherId || ''}
                                         onChange={(e) => {
                                           const tId = e.target.value;
+                                          if (tId) {
+                                            const workloadCheck = checkWorkloadExceeded(tId, schedule.duration, schedule.tempId);
+                                            if (workloadCheck) {
+                                              setActionWarning(`Cannot assign: ${workloadCheck.name}'s workload exceeds ${workloadCheck.limit}h/week limit.`);
+                                              return;
+                                            }
+                                          }
                                           const tObj = allTeachers.find(t => t.teacherDetails?.id === tId);
                                           const tName = tObj ? (tObj.fullName || tObj.full_name || tObj.name) : '—';
                                           setGridSchedules(prev => prev.map(s => s.tempId === schedule.tempId ? { ...s, teacherId: tId, teacherName: tName } : s));
