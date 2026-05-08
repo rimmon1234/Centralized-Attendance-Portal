@@ -513,6 +513,7 @@ async function buildAttendanceDetails(supabase, studentId, sessionType) {
     const sessionTimeStr = !rawTimeSlot || isPlaceholderSlot ? timeStr : rawTimeSlot
 
     subjectMap[class_section_id].teachers[teacherKey].records.push({
+      sessionDate: session.session_date,
       date: dateStr,
       time: sessionTimeStr,
       status: recordMap[session.id] ?? 'absent',

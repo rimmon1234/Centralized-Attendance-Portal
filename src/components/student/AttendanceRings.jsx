@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-const CircularProgress = ({ name, percentage, isOverall, color, size = 150, strokeWidth = 14, delay = 0, showIneligible, hasMatchingLecture, isEligibleByLecture }) => {
+const CircularProgress = ({ name, percentage, isOverall, color, size = 150, strokeWidth = 14, delay = 0, showIneligible, hasMatchingLecture, isEligibleByLecture, onClick }) => {
   const [mounted, setMounted] = useState(false);
   const radius = (size / 2) - strokeWidth;
   const circumference = 2 * Math.PI * radius;
@@ -24,9 +24,20 @@ const CircularProgress = ({ name, percentage, isOverall, color, size = 150, stro
 
   return (
     <div 
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (!onClick) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       className={`group relative flex flex-col items-center justify-start p-5 sm:p-6 bg-white border ${
         isOverall ? 'border-gray-100 shadow-[0_8px_30px_rgb(0,0,0,0.08)]' : 'border-gray-50 shadow-sm hover:border-gray-100 hover:shadow-[0_8px_20px_rgb(0,0,0,0.04)]'
       } rounded-[2rem] transition-all duration-300 ease-out hover:-translate-y-1 overflow-hidden h-full
+      ${onClick ? 'cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:ring-offset-2' : ''}
       ${!mounted ? 'opacity-0 translate-y-4' : 'opacity-100 translate-y-0'}`}
       style={{ transitionDelay: `${mounted ? 0 : delay}ms` }}
     >
@@ -96,7 +107,7 @@ const CircularProgress = ({ name, percentage, isOverall, color, size = 150, stro
 };
 
 
-const AttendanceRings = ({ title, subjects, detailsPath, showIneligible = false }) => {
+const AttendanceRings = ({ title, subjects, detailsPath, subjectDetailsPathBase, showIneligible = false }) => {
   const navigate = useNavigate();
 
   // calculate overall percentage
@@ -148,6 +159,7 @@ const AttendanceRings = ({ title, subjects, detailsPath, showIneligible = false 
             showIneligible={showIneligible}
             hasMatchingLecture={item.hasMatchingLecture}
             isEligibleByLecture={item.isEligibleByLecture}
+            onClick={!item.isOverall && subjectDetailsPathBase && item.code ? () => navigate(`${subjectDetailsPathBase}/${encodeURIComponent(item.code)}`) : undefined}
           />
         ))}
       </div>

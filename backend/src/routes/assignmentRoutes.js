@@ -4,6 +4,30 @@ import { supabaseAdmin } from '../lib/supabase.js'
 
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage() })
+const DEFAULT_ASSIGNMENT_ATTENDANCE_THRESHOLD = 75
+
+function isMissingAttendanceThresholdColumn(error) {
+  const message = String(error?.message || '').toLowerCase()
+  return message.includes('attendance_threshold') && message.includes('column')
+}
+
+function normalizeAttendanceThreshold(rawValue) {
+  if (rawValue === undefined || rawValue === null || rawValue === '') {
+    return DEFAULT_ASSIGNMENT_ATTENDANCE_THRESHOLD
+  }
+
+  const parsed = Number(rawValue)
+  if (!Number.isFinite(parsed)) {
+    return null
+  }
+
+  const rounded = Math.round(parsed)
+  if (rounded < 0 || rounded > 100) {
+    return null
+  }
+
+  return rounded
+}
 
 function hashString(input) {
   let hash = 2166136261
@@ -52,13 +76,27 @@ async function getTeacherProfileId(supabase, profileId) {
  */
 router.post('/', async (req, res) => {
   try {
-    const { classSectionId, title, questionCount, dueAt, description } = req.body
+    const {
+      classSectionId,
+      title,
+      questionCount,
+      dueAt,
+      description,
+      attendanceThreshold,
+    } = req.body
     const user = req.user
     const teacherId = await getTeacherProfileId(req.supabase, user.id)
+    const normalizedThreshold = normalizeAttendanceThreshold(attendanceThreshold)
 
     if (!classSectionId || !title || !questionCount) {
       return res.status(400).json({
         error: 'classSectionId, title, and questionCount are required'
+      })
+    }
+
+    if (normalizedThreshold === null) {
+      return res.status(400).json({
+        error: 'attendanceThreshold must be a number between 0 and 100'
       })
     }
 
@@ -81,18 +119,39 @@ router.post('/', async (req, res) => {
     }
 
     // Create assignment
-    const { data, error } = await req.supabase
+    const insertPayload = {
+      class_section_id: classSectionId,
+      created_by: teacherId,
+      title: title.trim(),
+      question_count: questionCount,
+      due_at: dueAt || null,
+      description: description?.trim() || null,
+      attendance_threshold: normalizedThreshold,
+    }
+
+    let createQuery = req.supabase
       .from('assignments')
-      .insert({
-        class_section_id: classSectionId,
-        created_by: teacherId,
-        title: title.trim(),
-        question_count: questionCount,
-        due_at: dueAt || null,
-        description: description?.trim() || null,
-      })
+      .insert(insertPayload)
       .select()
       .single()
+
+    let { data, error } = await createQuery
+
+    // Backward compatibility for environments where migration is not yet applied.
+    if (error && isMissingAttendanceThresholdColumn(error)) {
+      const { attendance_threshold: _ignored, ...legacyPayload } = insertPayload
+      const retryResult = await req.supabase
+        .from('assignments')
+        .insert(legacyPayload)
+        .select()
+        .single()
+
+      data = retryResult.data
+      error = retryResult.error
+      if (data && typeof data.attendance_threshold === 'undefined') {
+        data.attendance_threshold = DEFAULT_ASSIGNMENT_ATTENDANCE_THRESHOLD
+      }
+    }
 
     if (error) {
       return res.status(400).json({ error: error.message })
@@ -157,7 +216,10 @@ router.get('/student', async (req, res) => {
       sectionRows.map((row) => [row.class_section_id, row.class_sections])
     )
 
-    const { data: assignmentRows, error: assignmentError } = await db
+    let assignmentRows = null
+    let assignmentError = null
+
+    const assignmentQueryWithThreshold = await db
       .from('assignments')
       .select(`
         id,
@@ -167,10 +229,37 @@ router.get('/student', async (req, res) => {
         question_count,
         due_at,
         created_at,
-        created_by
+        created_by,
+        attendance_threshold
       `)
       .in('class_section_id', sectionIds)
       .order('created_at', { ascending: false })
+
+    assignmentRows = assignmentQueryWithThreshold.data
+    assignmentError = assignmentQueryWithThreshold.error
+
+    if (assignmentError && isMissingAttendanceThresholdColumn(assignmentError)) {
+      const fallbackQuery = await db
+        .from('assignments')
+        .select(`
+          id,
+          class_section_id,
+          title,
+          description,
+          question_count,
+          due_at,
+          created_at,
+          created_by
+        `)
+        .in('class_section_id', sectionIds)
+        .order('created_at', { ascending: false })
+
+      assignmentRows = (fallbackQuery.data || []).map((row) => ({
+        ...row,
+        attendance_threshold: DEFAULT_ASSIGNMENT_ATTENDANCE_THRESHOLD,
+      }))
+      assignmentError = fallbackQuery.error
+    }
 
     if (assignmentError) {
       return res.status(500).json({ error: assignmentError.message })
@@ -398,7 +487,10 @@ router.get('/student', async (req, res) => {
       const percentage = attendance.total > 0
         ? Math.round((attendance.attended / attendance.total) * 100)
         : 0
-      const canAccess = percentage >= 75
+      const requiredThreshold = Number.isFinite(Number(a.attendance_threshold))
+        ? Number(a.attendance_threshold)
+        : DEFAULT_ASSIGNMENT_ATTENDANCE_THRESHOLD
+      const canAccess = percentage >= requiredThreshold
 
       const linkedPool = questionMap[a.id] || []
       const sectionPool = sectionQuestionMap[a.class_section_id] || []
@@ -443,13 +535,13 @@ router.get('/student', async (req, res) => {
           attended: attendance.attended,
           total: attendance.total,
           percentage,
-          required: 75,
+          required: requiredThreshold,
         },
         isAccessible: canAccess,
         hasSubmitted: submittedAssignmentIds.has(a.id),
         blockedReason: canAccess
           ? null
-          : 'Minimum 75% attendance required in this course to access assignment questions.',
+          : `Minimum ${requiredThreshold}% attendance required in this course to access assignment questions.`,
         questions: randomizedQuestions,
       }
     })
@@ -490,7 +582,10 @@ router.get('/sections/:id', async (req, res) => {
     }
 
     // Get assignments for this section
-    const { data: assignments, error } = await req.supabase
+    let assignments = null
+    let error = null
+
+    const sectionAssignmentsQuery = await req.supabase
       .from('assignments')
       .select(`
         id,
@@ -499,10 +594,36 @@ router.get('/sections/:id', async (req, res) => {
         due_at,
         description,
         created_at,
+        attendance_threshold,
         assignment_questions (count)
       `)
       .eq('class_section_id', classSectionId)
       .order('created_at', { ascending: false })
+
+    assignments = sectionAssignmentsQuery.data
+    error = sectionAssignmentsQuery.error
+
+    if (error && isMissingAttendanceThresholdColumn(error)) {
+      const fallbackQuery = await req.supabase
+        .from('assignments')
+        .select(`
+          id,
+          title,
+          question_count,
+          due_at,
+          description,
+          created_at,
+          assignment_questions (count)
+        `)
+        .eq('class_section_id', classSectionId)
+        .order('created_at', { ascending: false })
+
+      assignments = (fallbackQuery.data || []).map((row) => ({
+        ...row,
+        attendance_threshold: DEFAULT_ASSIGNMENT_ATTENDANCE_THRESHOLD,
+      }))
+      error = fallbackQuery.error
+    }
 
     if (error) {
       return res.status(500).json({ error: error.message })
@@ -513,6 +634,9 @@ router.get('/sections/:id', async (req, res) => {
       title: a.title,
       description: a.description,
       questionCount: a.question_count,
+      attendanceThreshold: Number.isFinite(Number(a.attendance_threshold))
+        ? Number(a.attendance_threshold)
+        : DEFAULT_ASSIGNMENT_ATTENDANCE_THRESHOLD,
       dueAt: a.due_at,
       createdAt: a.created_at,
       questionsLinked: a.assignment_questions?.[0]?.count || 0,

@@ -179,6 +179,7 @@ export default function StudentDashboard() {
                 title="Lecture Attendance"
                 subjects={lectureData}
                 detailsPath="/lectures"
+                subjectDetailsPathBase="/attendance/heatmap/lecture"
               />
             )}
             {labData.length > 0 && (
@@ -186,6 +187,7 @@ export default function StudentDashboard() {
                 title="Lab Attendance"
                 subjects={labData}
                 detailsPath="/labs"
+                subjectDetailsPathBase="/attendance/heatmap/lab"
                 showIneligible={true}
               />
             )}

@@ -24,6 +24,7 @@ export default function TeacherAssignments() {
   const [formDesc, setFormDesc] = useState('')
   const [formDue, setFormDue] = useState('')
   const [formCount, setFormCount] = useState(5)
+  const [formAttendanceThreshold, setFormAttendanceThreshold] = useState(75)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
@@ -83,6 +84,7 @@ export default function TeacherAssignments() {
       description: formDesc.trim(),
       questionCount: formCount,
       dueAt: formDue ? new Date(formDue).toISOString() : null,
+      attendanceThreshold: formAttendanceThreshold,
     })
 
     if (assignmentError || !assignment?.id) {
@@ -104,7 +106,7 @@ export default function TeacherAssignments() {
       }
     }
 
-    setFormTitle(''); setFormDesc(''); setFormDue(''); setFormCount(5)
+    setFormTitle(''); setFormDesc(''); setFormDue(''); setFormCount(5); setFormAttendanceThreshold(75)
     setShowForm(false)
     setSubmitting(false)
     await loadAssignments()
@@ -217,7 +219,7 @@ export default function TeacherAssignments() {
                       rows={2}
                       className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                     />
-                    <div className="flex gap-3">
+                    <div className="flex gap-3 flex-wrap">
                       <div className="flex flex-col gap-1.5 flex-1">
                         <label className="text-xs text-gray-500 dark:text-gray-400">Due date</label>
                         <input
@@ -225,6 +227,17 @@ export default function TeacherAssignments() {
                           value={formDue}
                           onChange={(e) => setFormDue(e.target.value)}
                           className="w-full px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <label className="text-xs text-gray-500 dark:text-gray-400">Attendance threshold (%)</label>
+                        <input
+                          type="number"
+                          value={formAttendanceThreshold}
+                          onChange={(e) => setFormAttendanceThreshold(Number(e.target.value))}
+                          min={0}
+                          max={100}
+                          className="w-36 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                       </div>
                       <div className="flex flex-col gap-1.5">
@@ -278,6 +291,9 @@ export default function TeacherAssignments() {
                         <div className="flex items-center justify-between mt-2">
                           <p className="text-xs text-gray-400">
                             {(a.questionCount ?? a.question_count ?? 0)} questions · Created {new Date(a.createdAt || a.created_at).toDateString()}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 mr-3">
+                            Min attendance: {a.attendanceThreshold ?? 75}%
                           </p>
                           <button
                             onClick={() => loadSubmissions(a.id)}
