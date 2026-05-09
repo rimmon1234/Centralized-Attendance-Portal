@@ -32,6 +32,7 @@ export default function TeacherAssignments() {
   const [viewSubmissionsId, setViewSubmissionsId] = useState(null)
   const [submissionsData, setSubmissionsData] = useState({})
   const [loadingSubmissions, setLoadingSubmissions] = useState({})
+  const [archiveOpen, setArchiveOpen] = useState(false)
 
   // New question form
   const [showQForm, setShowQForm] = useState(false)
@@ -365,88 +366,96 @@ export default function TeacherAssignments() {
                     {archivedAssignments.length > 0 && (
                       <div className="pt-4">
                         <div className="flex items-center justify-between mb-2">
-                          <h4 className="text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider">Archive</h4>
+                          <button
+                            onClick={() => setArchiveOpen(prev => !prev)}
+                            className="text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider flex items-center gap-2"
+                          >
+                            <span>Archive</span>
+                            <span className={`transition-transform ${archiveOpen ? 'rotate-180' : ''}`}>▾</span>
+                          </button>
                           <p className="text-xs text-gray-400">Past deadlines</p>
                         </div>
-                        <div className="flex flex-col gap-3">
-                          {archivedAssignments.map((a) => (
-                            <div key={`archive-${a.id}`} className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 flex flex-col gap-2">
-                              <div className="flex items-start justify-between">
-                                <div>
-                                  <p className="text-sm font-semibold text-gray-800 dark:text-white">{a.title}</p>
-                                  {a.description && (
-                                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{a.description}</p>
-                                  )}
+                        {archiveOpen && (
+                          <div className="flex flex-col gap-3">
+                            {archivedAssignments.map((a) => (
+                              <div key={`archive-${a.id}`} className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-2xl p-5 flex flex-col gap-2">
+                                <div className="flex items-start justify-between">
+                                  <div>
+                                    <p className="text-sm font-semibold text-gray-800 dark:text-white">{a.title}</p>
+                                    {a.description && (
+                                      <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{a.description}</p>
+                                    )}
+                                  </div>
+                                  <span className="text-xs text-gray-400 shrink-0 ml-4">
+                                    {(a.dueAt || a.due_at)
+                                      ? `Due ${new Date(a.dueAt || a.due_at).toLocaleDateString()}`
+                                      : 'No due date'}
+                                  </span>
                                 </div>
-                                <span className="text-xs text-gray-400 shrink-0 ml-4">
-                                  {(a.dueAt || a.due_at)
-                                    ? `Due ${new Date(a.dueAt || a.due_at).toLocaleDateString()}`
-                                    : 'No due date'}
-                                </span>
-                              </div>
-                              <div className="flex items-center justify-between mt-2">
-                                <p className="text-xs text-gray-400">
-                                  {(a.questionCount ?? a.question_count ?? 0)} questions · Created {new Date(a.createdAt || a.created_at).toDateString()}
-                                </p>
-                                <div className="flex flex-wrap items-center gap-4 mr-3 text-xs text-gray-500 dark:text-gray-400">
-                                  <p>
-                                    Min attendance: {a.attendanceThreshold ?? 75}%
+                                <div className="flex items-center justify-between mt-2">
+                                  <p className="text-xs text-gray-400">
+                                    {(a.questionCount ?? a.question_count ?? 0)} questions · Created {new Date(a.createdAt || a.created_at).toDateString()}
                                   </p>
-                                  <p>
-                                    Eligible Students: {a.eligibleStudents ?? 0}
-                                  </p>
-                                  <p>
-                                    Total Submissions: {a.totalSubmissions ?? 0}
-                                  </p>
+                                  <div className="flex flex-wrap items-center gap-4 mr-3 text-xs text-gray-500 dark:text-gray-400">
+                                    <p>
+                                      Min attendance: {a.attendanceThreshold ?? 75}%
+                                    </p>
+                                    <p>
+                                      Eligible Students: {a.eligibleStudents ?? 0}
+                                    </p>
+                                    <p>
+                                      Total Submissions: {a.totalSubmissions ?? 0}
+                                    </p>
+                                  </div>
+                                  <button
+                                    onClick={() => loadSubmissions(a.id)}
+                                    className="text-xs px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-medium hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors shrink-0"
+                                  >
+                                    {viewSubmissionsId === a.id ? 'Hide Submissions' : 'View Submissions'}
+                                  </button>
                                 </div>
-                                <button
-                                  onClick={() => loadSubmissions(a.id)}
-                                  className="text-xs px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 font-medium hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors shrink-0"
-                                >
-                                  {viewSubmissionsId === a.id ? 'Hide Submissions' : 'View Submissions'}
-                                </button>
-                              </div>
 
-                              {viewSubmissionsId === a.id && (
-                                <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
-                                  {loadingSubmissions[a.id] ? (
-                                    <div className="flex justify-center py-4"><p className="text-xs text-gray-400">Loading submissions...</p></div>
-                                  ) : (
-                                    <div className="flex flex-col gap-3">
-                                      {(!submissionsData[a.id] || submissionsData[a.id].length === 0) ? (
-                                        <p className="text-xs text-gray-500 italic">No submissions yet.</p>
-                                      ) : (
-                                        submissionsData[a.id].map(sub => (
-                                          <div key={sub.student_id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
-                                            <div>
-                                              <p className="text-sm font-semibold text-gray-800 dark:text-white">{sub.student_name}</p>
-                                              <p className="text-[11px] text-gray-500 dark:text-gray-400 uppercase tracking-wide mt-0.5">
-                                                {sub.roll_number} • {sub.department} • Year {sub.year} • Sec {sub.section}
-                                              </p>
+                                {viewSubmissionsId === a.id && (
+                                  <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-800">
+                                    {loadingSubmissions[a.id] ? (
+                                      <div className="flex justify-center py-4"><p className="text-xs text-gray-400">Loading submissions...</p></div>
+                                    ) : (
+                                      <div className="flex flex-col gap-3">
+                                        {(!submissionsData[a.id] || submissionsData[a.id].length === 0) ? (
+                                          <p className="text-xs text-gray-500 italic">No submissions yet.</p>
+                                        ) : (
+                                          submissionsData[a.id].map(sub => (
+                                            <div key={sub.student_id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700">
+                                              <div>
+                                                <p className="text-sm font-semibold text-gray-800 dark:text-white">{sub.student_name}</p>
+                                                <p className="text-[11px] text-gray-500 dark:text-gray-400 uppercase tracking-wide mt-0.5">
+                                                  {sub.roll_number} • {sub.department} • Year {sub.year} • Sec {sub.section}
+                                                </p>
+                                              </div>
+                                              <div className="flex flex-col sm:items-end gap-1 shrink-0">
+                                                <a 
+                                                  href={sub.file_url} 
+                                                  target="_blank" 
+                                                  rel="noopener noreferrer"
+                                                  className="text-xs px-3 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium transition-colors text-center"
+                                                >
+                                                  Download PDF
+                                                </a>
+                                                <span className="text-[10px] text-gray-400">
+                                                  {new Date(sub.submitted_at).toLocaleString()}
+                                                </span>
+                                              </div>
                                             </div>
-                                            <div className="flex flex-col sm:items-end gap-1 shrink-0">
-                                              <a 
-                                                href={sub.file_url} 
-                                                target="_blank" 
-                                                rel="noopener noreferrer"
-                                                className="text-xs px-3 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-600 text-white font-medium transition-colors text-center"
-                                              >
-                                                Download PDF
-                                              </a>
-                                              <span className="text-[10px] text-gray-400">
-                                                {new Date(sub.submitted_at).toLocaleString()}
-                                              </span>
-                                            </div>
-                                          </div>
-                                        ))
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
+                                          ))
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

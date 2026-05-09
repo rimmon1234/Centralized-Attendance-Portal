@@ -11,6 +11,7 @@ export default function StudentAssignments() {
   const [expanded, setExpanded] = useState({})
   const [uploadingId, setUploadingId] = useState(null)
   const [uploadMessages, setUploadMessages] = useState({})
+  const [archiveOpen, setArchiveOpen] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -359,47 +360,59 @@ export default function StudentAssignments() {
             {groupedArchive.length > 0 && (
               <section className="space-y-4 pt-6">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-gray-800 dark:text-gray-200 uppercase tracking-wider pl-1">Archive</h3>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">Eligible assignments with past deadlines</p>
-                </div>
-                {groupedArchive.map((group) => (
-                  <div key={`archive-${group.courseCode}-${group.courseName}`} className="space-y-3">
-                    <h4 className="text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider pl-1">
-                      {group.courseCode} — {group.courseName}
-                    </h4>
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                      {group.items
-                        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
-                        .map((assignment) => (
-                          <article
-                            key={`archive-${assignment.id}`}
-                            className="rounded-2xl p-5 border bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <div>
-                                <p className="text-sm font-semibold text-gray-900 dark:text-white">{assignment.title}</p>
-                                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                                  Assigned by {assignment.teacher?.name || 'Assigned Teacher'}
-                                </p>
-                              </div>
-                              {assignment.hasSubmitted ? (
-                                <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-50 dark:bg-green-950/30 text-green-600 dark:text-green-400 border border-green-100 dark:border-green-900/40">
-                                  Submitted
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-100 dark:border-amber-900/40">
-                                  Missed
-                                </span>
-                              )}
-                            </div>
-                            <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
-                              Deadline: {(assignment.dueAt || assignment.due_at) ? new Date(assignment.dueAt || assignment.due_at).toLocaleString() : 'N/A'}
-                            </div>
-                          </article>
-                        ))}
-                    </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setArchiveOpen(prev => !prev)}
+                      className="text-sm font-bold text-gray-800 dark:text-gray-200 uppercase tracking-wider pl-1 flex items-center gap-2"
+                    >
+                      <span>Archive</span>
+                      <span className={`transition-transform ${archiveOpen ? 'rotate-180' : ''}`}>▾</span>
+                    </button>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Eligible assignments with past deadlines</p>
                   </div>
-                ))}
+                </div>
+                {archiveOpen && (
+                  <div className="space-y-4">
+                    {groupedArchive.map((group) => (
+                      <div key={`archive-${group.courseCode}-${group.courseName}`} className="space-y-3">
+                        <h4 className="text-xs font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider pl-1">
+                          {group.courseCode} — {group.courseName}
+                        </h4>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                          {group.items
+                            .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+                            .map((assignment) => (
+                              <article
+                                key={`archive-${assignment.id}`}
+                                className="rounded-2xl p-5 border bg-gray-50 dark:bg-gray-800/50 border-gray-200 dark:border-gray-700"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <p className="text-sm font-semibold text-gray-900 dark:text-white">{assignment.title}</p>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                      Assigned by {assignment.teacher?.name || 'Assigned Teacher'}
+                                    </p>
+                                  </div>
+                                  {assignment.hasSubmitted ? (
+                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-green-50 dark:bg-green-950/30 text-green-600 dark:text-green-400 border border-green-100 dark:border-green-900/40">
+                                      Submitted
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 border border-amber-100 dark:border-amber-900/40">
+                                      Missed
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-3 text-xs text-gray-500 dark:text-gray-400">
+                                  Deadline: {(assignment.dueAt || assignment.due_at) ? new Date(assignment.dueAt || assignment.due_at).toLocaleString() : 'N/A'}
+                                </div>
+                              </article>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </section>
             )}
           </div>
