@@ -133,7 +133,7 @@ export default function StudentAssignments() {
       updateMsg('success', 'Assignment submitted successfully!')
       
       setAssignments(prev => prev.map(a => 
-        a.id === assignmentId ? { ...a, hasSubmitted: true } : a
+        a.id === assignmentId ? { ...a, hasSubmitted: true, lastSubmittedAt: new Date().toISOString() } : a
       ))
     } catch (err) {
       updateMsg('error', err.message || 'Upload failed.')
@@ -262,11 +262,18 @@ export default function StudentAssignments() {
                                   
                                   <div className="flex flex-col items-end gap-1.5 w-full max-w-[220px]">
                                     {assignment.hasSubmitted && (
-                                      <div className="px-3 py-1.5 rounded-lg bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 font-medium text-[11px] border border-green-200 dark:border-green-800/50 flex items-center gap-1.5">
-                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                        </svg>
-                                        Answer Submitted
+                                      <div className="px-3 py-1.5 rounded-lg bg-green-50 dark:bg-green-900/30 text-green-600 dark:text-green-400 font-medium text-[11px] border border-green-200 dark:border-green-800/50 flex flex-col gap-0.5">
+                                        <div className="flex items-center gap-1.5">
+                                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                          </svg>
+                                          Answer Submitted
+                                        </div>
+                                        {assignment.lastSubmittedAt && (
+                                          <span className="text-[10px] text-gray-500 dark:text-gray-400 font-normal pl-5">
+                                            Last submitted: {new Date(assignment.lastSubmittedAt).toLocaleString()}
+                                          </span>
+                                        )}
                                       </div>
                                     )}
 

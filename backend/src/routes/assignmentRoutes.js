@@ -338,14 +338,18 @@ router.get('/student', async (req, res) => {
     }
 
     let submittedAssignmentIds = new Set()
+    let submissionTimestamps = {}
     if (assignmentIds.length > 0) {
       const { data: submissionRows } = await supabaseAdmin
         .from('assignment_submissions')
-        .select('assignment_id')
+        .select('assignment_id, submitted_at')
         .eq('student_id', studentProfile.id)
         .in('assignment_id', assignmentIds)
         
       submittedAssignmentIds = new Set((submissionRows || []).map(r => r.assignment_id))
+      submissionTimestamps = Object.fromEntries(
+        (submissionRows || []).filter(r => r.assignment_id).map(r => [r.assignment_id, r.submitted_at])
+      )
     }
 
     let sectionQuestionMap = {}
@@ -539,6 +543,7 @@ router.get('/student', async (req, res) => {
         },
         isAccessible: canAccess,
         hasSubmitted: submittedAssignmentIds.has(a.id),
+        lastSubmittedAt: submissionTimestamps[a.id] || null,
         blockedReason: canAccess
           ? null
           : `Minimum ${requiredThreshold}% attendance required in this course to access assignment questions.`,
