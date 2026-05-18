@@ -6,40 +6,53 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: path.resolve(__dirname, '../../.env') })
 
 /**
- * Send an email using SMTP (preferred) or Resend fallback.
- * SMTP uses Nodemailer and works with Gmail app passwords.
+ * Send an email using Gmail API (OAuth2 over HTTPS) or Resend fallback.
  */
 export async function sendEmail({ to, subject, html }) {
-  const smtpHost = process.env.SMTP_HOST
-  const smtpUser = process.env.SMTP_USER
-  const smtpPass = process.env.SMTP_PASS
-  const smtpPort = Number(process.env.SMTP_PORT || 465)
-  const smtpFrom = process.env.SMTP_FROM || smtpUser
+  const clientId = process.env.GMAIL_CLIENT_ID
+  const clientSecret = process.env.GMAIL_CLIENT_SECRET
+  const refreshToken = process.env.GMAIL_REFRESH_TOKEN
+  const sender = process.env.GMAIL_SENDER || process.env.EMAIL_USER
 
-  if (smtpHost && smtpUser && smtpPass) {
+  if (clientId && clientSecret && refreshToken && sender) {
     try {
-      const nodemailer = await import('nodemailer')
-      const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465,
-        auth: { user: smtpUser, pass: smtpPass },
-        family: 4,
-        connectionTimeout: 10000,
-        greetingTimeout: 5000,
-        socketTimeout: 10000,
-      })
+      const { google } = await import('googleapis')
+      const oauth2Client = new google.auth.OAuth2(
+        clientId,
+        clientSecret,
+        'https://developers.google.com/oauthplayground'
+      )
 
-      const info = await transporter.sendMail({
-        from: smtpFrom,
-        to,
-        subject,
+      oauth2Client.setCredentials({ refresh_token: refreshToken })
+      const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
+
+      const rawMessage = [
+        `From: ${sender}`,
+        `To: ${to}`,
+        `Subject: ${subject}`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/html; charset=UTF-8',
+        '',
         html,
-      })
+      ].join('\n')
 
-      return { success: true, data: { messageId: info.messageId } }
+      const encodedMessage = Buffer.from(rawMessage)
+        .toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '')
+
+      const response = await gmail.users.messages.send({
+        userId: 'me',
+        requestBody: { raw: encodedMessage },
+      })
+      console.log('[email] Gmail API sent', {
+        to,
+        messageId: response?.data?.id || null,
+      })
+      return { success: true, data: { messageId: response?.data?.id } }
     } catch (err) {
-      console.error('[email] SMTP error:', err)
+      console.error('[email] Gmail API error:', err)
       return { success: false, error: err.message || String(err) }
     }
   }

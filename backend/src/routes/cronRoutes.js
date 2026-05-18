@@ -44,6 +44,8 @@ function buildReminderKey(sectionId, sessionDate, timeSlot) {
 
 router.post('/attendance-reminders', async (req, res) => {
   try {
+    const debug = String(req.query.debug || '').toLowerCase() === '1'
+    const debugDetails = []
     if (!supabaseAdmin) {
       return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY is required for cron reminders.' })
     }
@@ -75,7 +77,7 @@ router.post('/attendance-reminders', async (req, res) => {
             teacher_assignments ( teacher_id )
           )
         `)
-        .eq('class_routines.is_active', true)
+        .in('class_routines.is_active', [true, 'TRUE', 'true'])
         .eq('day', dayName)
 
       if (error) {
@@ -154,30 +156,69 @@ router.post('/attendance-reminders', async (req, res) => {
       const endTime = parseTimeSlotEnd(timeSlot)
       if (!endTime) {
         skippedCount++
+        if (debug && debugDetails.length < 50) {
+          debugDetails.push({
+            scheduleId: schedule.id,
+            reason: 'invalid_time_slot',
+            timeSlot,
+          })
+        }
         continue
       }
 
       const endTimestamp = new Date(`${schedule.dateString}T${endTime}:00+05:30`)
       if (Number.isNaN(endTimestamp.getTime())) {
         skippedCount++
+        if (debug && debugDetails.length < 50) {
+          debugDetails.push({
+            scheduleId: schedule.id,
+            reason: 'invalid_end_timestamp',
+            timeSlot,
+            dateString: schedule.dateString,
+          })
+        }
         continue
       }
 
       const deadline = new Date(endTimestamp.getTime() + REMINDER_DELAY_HOURS * 60 * 60 * 1000)
       if (Date.now() < deadline.getTime()) {
         skippedCount++
+        if (debug && debugDetails.length < 50) {
+          debugDetails.push({
+            scheduleId: schedule.id,
+            reason: 'too_early',
+            timeSlot,
+            dateString: schedule.dateString,
+          })
+        }
         continue
       }
 
       const reminderKey = buildReminderKey(schedule.class_section_id, schedule.dateString, timeSlot)
       if (loggedKeys.has(reminderKey)) {
         skippedCount++
+        if (debug && debugDetails.length < 50) {
+          debugDetails.push({
+            scheduleId: schedule.id,
+            reason: 'already_logged',
+            timeSlot,
+            dateString: schedule.dateString,
+          })
+        }
         continue
       }
 
       const session = sessionMap.get(reminderKey)
       if (session && session.attendance_records && session.attendance_records.length > 0) {
         skippedCount++
+        if (debug && debugDetails.length < 50) {
+          debugDetails.push({
+            scheduleId: schedule.id,
+            reason: 'attendance_recorded',
+            timeSlot,
+            dateString: schedule.dateString,
+          })
+        }
         continue
       }
 
@@ -185,6 +226,13 @@ router.post('/attendance-reminders', async (req, res) => {
       const courseCode = (course?.code || '').trim().toUpperCase()
       if (SPECIAL_CODES.has(courseCode)) {
         skippedCount++
+        if (debug && debugDetails.length < 50) {
+          debugDetails.push({
+            scheduleId: schedule.id,
+            reason: 'special_block',
+            courseCode,
+          })
+        }
         continue
       }
 
@@ -194,6 +242,13 @@ router.post('/attendance-reminders', async (req, res) => {
       const teacherEmail = teacher?.profiles?.email
       if (!teacherEmail) {
         skippedCount++
+        if (debug && debugDetails.length < 50) {
+          debugDetails.push({
+            scheduleId: schedule.id,
+            reason: 'missing_teacher_email',
+            teacherId,
+          })
+        }
         continue
       }
 
@@ -228,19 +283,21 @@ router.post('/attendance-reminders', async (req, res) => {
       })
 
       if (emailResult?.success) {
-        const { error: insertError } = await supabaseAdmin
-          .from('attendance_reminder_logs')
-          .insert({
-            session_id: session?.id || null,
-            teacher_id: teacherId,
-            class_section_id: schedule.class_section_id,
-            reminder_type: 'attendance_missing_3h',
-            session_date: schedule.dateString,
-            time_slot: timeSlot,
-          })
+        if (session?.id) {
+          const { error: insertError } = await supabaseAdmin
+            .from('attendance_reminder_logs')
+            .insert({
+              session_id: session.id,
+              teacher_id: teacherId,
+              class_section_id: schedule.class_section_id,
+              reminder_type: 'attendance_missing_3h',
+              session_date: schedule.dateString,
+              time_slot: timeSlot,
+            })
 
-        if (insertError) {
-          console.error('[reminder] Log insert failed:', insertError)
+          if (insertError) {
+            console.error('[reminder] Log insert failed:', insertError)
+          }
         }
 
         sentCount++
@@ -249,7 +306,12 @@ router.post('/attendance-reminders', async (req, res) => {
       }
     }
 
-    return res.json({ sent: sentCount, skipped: skippedCount, total: allSchedules.length })
+    return res.json({
+      sent: sentCount,
+      skipped: skippedCount,
+      total: allSchedules.length,
+      ...(debug ? { debug: debugDetails } : {}),
+    })
   } catch (err) {
     console.error('POST /cron/attendance-reminders error:', err)
     return res.status(500).json({ error: 'Internal server error' })
