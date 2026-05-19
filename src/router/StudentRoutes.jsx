@@ -12,6 +12,7 @@ const StudentAttendanceHeatmap = lazy(() => import('../pages/student/StudentAtte
 const StudentContacts = lazy(() => import('../pages/student/StudentContacts'))
 const StudentCanISkip = lazy(() => import('../pages/student/StudentCanISkip'))
 const StudentLeaves = lazy(() => import('../pages/student/StudentLeaves'))
+const StudentMarks = lazy(() => import('../pages/student/StudentMarks'))
 
 export default function StudentRoutes() {
   return (
@@ -23,6 +24,7 @@ export default function StudentRoutes() {
         <Route path="leaves" element={<StudentLeaves />} />
         <Route path="assignments" element={<StudentAssignments />} />
         <Route path="notes" element={<StudentNotes />} />
+        <Route path="marks" element={<StudentMarks />} />
         <Route path="lectures" element={<StudentLectureDetails />} />
         <Route path="labs" element={<StudentLabDetails />} />
         <Route path="attendance/heatmap/:type/:courseCode" element={<StudentAttendanceHeatmap />} />
