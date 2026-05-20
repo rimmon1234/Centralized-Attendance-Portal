@@ -19,15 +19,27 @@ function getIstDayName(dateString) {
   }).format(date)
 }
 
+function parseTimePart(value) {
+  const text = String(value || '').trim().toLowerCase()
+  const match = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/)
+  if (!match) return null
+  let hours = Number(match[1])
+  const minutes = match[2] == null ? 0 : Number(match[2])
+  if (Number.isNaN(hours) || Number.isNaN(minutes) || minutes > 59) return null
+  const meridiem = match[3]
+  if (meridiem) {
+    if (hours === 12) hours = meridiem === 'am' ? 0 : 12
+    else if (meridiem === 'pm') hours += 12
+  }
+  if (hours < 0 || hours > 23) return null
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
 function parseTimeSlotEnd(timeSlot) {
   if (!timeSlot || typeof timeSlot !== 'string') return null
   const parts = timeSlot.split('-')
   if (parts.length !== 2) return null
-  const end = parts[1].trim()
-  if (!/^\d{1,2}:\d{2}$/.test(end)) return null
-  const [hours, minutes] = end.split(':').map(Number)
-  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null
-  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+  return parseTimePart(parts[1])
 }
 
 function getCourseFromSchedule(schedule) {
@@ -46,13 +58,13 @@ router.post('/attendance-reminders', async (req, res) => {
   try {
     const debug = String(req.query.debug || '').toLowerCase() === '1'
     const debugDetails = []
+    const sentDetails = []
     if (!supabaseAdmin) {
       return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY is required for cron reminders.' })
     }
 
     const todayIst = toIstDateString(new Date())
-    const yesterdayIst = toIstDateString(new Date(Date.now() - 24 * 60 * 60 * 1000))
-    const targetDates = [yesterdayIst, todayIst]
+    const targetDates = [todayIst]
 
     const schedulesByDate = []
     for (const dateString of targetDates) {
@@ -283,21 +295,29 @@ router.post('/attendance-reminders', async (req, res) => {
       })
 
       if (emailResult?.success) {
-        if (session?.id) {
-          const { error: insertError } = await supabaseAdmin
-            .from('attendance_reminder_logs')
-            .insert({
-              session_id: session.id,
-              teacher_id: teacherId,
-              class_section_id: schedule.class_section_id,
-              reminder_type: 'attendance_missing_3h',
-              session_date: schedule.dateString,
-              time_slot: timeSlot,
-            })
+        const { error: insertError } = await supabaseAdmin
+          .from('attendance_reminder_logs')
+          .insert({
+            session_id: session?.id ?? null,
+            teacher_id: teacherId,
+            class_section_id: schedule.class_section_id,
+            reminder_type: 'attendance_missing_3h',
+            session_date: schedule.dateString,
+            time_slot: timeSlot,
+          })
 
-          if (insertError) {
-            console.error('[reminder] Log insert failed:', insertError)
-          }
+        if (insertError) {
+          console.error('[reminder] Log insert failed:', insertError)
+        }
+
+        if (debug) {
+          sentDetails.push({
+            scheduleId: schedule.id,
+            reminderKey,
+            teacherEmail,
+            logInserted: !insertError,
+            logError: insertError ? (insertError.message || 'log_insert_failed') : null,
+          })
         }
 
         sentCount++
@@ -310,7 +330,7 @@ router.post('/attendance-reminders', async (req, res) => {
       sent: sentCount,
       skipped: skippedCount,
       total: allSchedules.length,
-      ...(debug ? { debug: debugDetails } : {}),
+      ...(debug ? { debug: debugDetails, sentDetails } : {}),
     })
   } catch (err) {
     console.error('POST /cron/attendance-reminders error:', err)
