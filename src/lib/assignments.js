@@ -69,6 +69,36 @@ export async function addQuestion(payload) {
   }
 }
 
+export async function extractQuestionBankFromFile(file, classSectionId) {
+  try {
+    const formData = new FormData()
+    formData.append('docFile', file)
+    formData.append('classSectionId', classSectionId)
+
+    const result = await apiFetch('/api/v1/assignments/questions/extract', {
+      method: 'POST',
+      body: formData,
+      headers: {},
+    })
+
+    return { data: result, error: null }
+  } catch (err) {
+    return { data: null, error: err }
+  }
+}
+
+export async function confirmQuestionBankBulk(classSectionId, questions, topic, difficulty) {
+  try {
+    const result = await apiFetch('/api/v1/assignments/questions/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ classSectionId, questions, topic, difficulty }),
+    })
+    return { data: result, error: null }
+  } catch (err) {
+    return { data: null, error: err }
+  }
+}
+
 export async function linkQuestionsToAssignment(assignmentId, questionIds) {
   try {
     const result = await apiFetch(`/api/v1/assignments/${assignmentId}/link-questions`, {

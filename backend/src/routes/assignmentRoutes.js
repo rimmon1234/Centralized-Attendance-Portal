@@ -1,5 +1,11 @@
 import { Router } from 'express'
 import multer from 'multer'
+import mammoth from 'mammoth'
+import pdfParse from 'pdf-parse'
+import Groq from 'groq-sdk'
+import { parse } from 'node-html-parser'
+import JSZip from 'jszip'
+import { XMLParser } from 'fast-xml-parser'
 import { supabaseAdmin } from '../lib/supabase.js'
 
 const router = Router()
@@ -67,6 +73,364 @@ async function getTeacherProfileId(supabase, profileId) {
 
   if (error || !teacherProfile) return null
   return teacherProfile.id
+}
+
+function normalizeDifficulty(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (normalized === 'locq') return 'locq'
+  if (normalized === 'iocq') return 'iocq'
+  if (normalized === 'hocq') return 'hocq'
+  if (normalized === 'easy') return 'locq'
+  if (normalized === 'medium' || normalized === 'intermediate') return 'iocq'
+  if (normalized === 'hard') return 'hocq'
+  return 'iocq'
+}
+
+async function ensureTeacherAssigned(supabase, teacherId, classSectionId) {
+  if (!teacherId || !classSectionId) return false
+  const { data } = await supabase
+    .from('teacher_assignments')
+    .select('id')
+    .eq('teacher_id', teacherId)
+    .eq('class_section_id', classSectionId)
+    .single()
+  return Boolean(data)
+}
+
+function stripMarkdownJson(text) {
+  return String(text || '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim()
+}
+
+function encodeIndentation(text) {
+  return String(text || '')
+    .split('\n')
+    .map((line) => {
+      const match = line.match(/^(\s+)/)
+      if (!match) return line
+      const indent = match[1]
+      let encoded = ''
+      for (const ch of indent) {
+        if (ch === '\t') encoded += '[TAB]'
+        else if (ch === ' ') encoded += '[SP]'
+      }
+      return `${encoded}${line.slice(indent.length)}`
+    })
+    .join('\n')
+}
+
+function decodeIndentation(text) {
+  return String(text || '')
+    .replace(/\[TAB\]/g, '\t')
+    .replace(/\[SP\]/g, ' ')
+}
+
+function romanize(value) {
+  if (value <= 0) return ''
+  const map = [
+    { val: 1000, sym: 'M' },
+    { val: 900, sym: 'CM' },
+    { val: 500, sym: 'D' },
+    { val: 400, sym: 'CD' },
+    { val: 100, sym: 'C' },
+    { val: 90, sym: 'XC' },
+    { val: 50, sym: 'L' },
+    { val: 40, sym: 'XL' },
+    { val: 10, sym: 'X' },
+    { val: 9, sym: 'IX' },
+    { val: 5, sym: 'V' },
+    { val: 4, sym: 'IV' },
+    { val: 1, sym: 'I' },
+  ]
+  let num = value
+  let result = ''
+  for (const entry of map) {
+    while (num >= entry.val) {
+      result += entry.sym
+      num -= entry.val
+    }
+  }
+  return result
+}
+
+function resolveListStyle(node) {
+  const typeAttr = node.getAttribute('type')
+  if (typeAttr) return typeAttr
+  const style = String(node.getAttribute('style') || '').toLowerCase()
+  if (style.includes('lower-alpha')) return 'lower-alpha'
+  if (style.includes('upper-alpha')) return 'upper-alpha'
+  if (style.includes('lower-roman')) return 'lower-roman'
+  if (style.includes('upper-roman')) return 'upper-roman'
+  if (style.includes('decimal')) return 'decimal'
+  return 'decimal'
+}
+
+function formatListMarker(index, style) {
+  if (style === 'lower-alpha' || style === 'a') {
+    return `(${String.fromCharCode(96 + index)})`
+  }
+  if (style === 'upper-alpha' || style === 'A') {
+    return `(${String.fromCharCode(64 + index)})`
+  }
+  if (style === 'lower-roman' || style === 'i') {
+    return `${romanize(index).toLowerCase()}.`
+  }
+  if (style === 'upper-roman' || style === 'I') {
+    return `${romanize(index).toUpperCase()}.`
+  }
+  return `${index}.`
+}
+
+function htmlToTextWithLists(html) {
+  const root = parse(html || '')
+  const listStack = []
+
+  const walk = (node) => {
+    if (!node) return ''
+    if (node.nodeType === 3) return node.rawText
+    if (!node.tagName) return ''
+    const tag = node.tagName.toLowerCase()
+
+    if (tag === 'br') return '\n'
+    if (tag === 'p') {
+      const text = node.childNodes.map(walk).join('')
+      return `${text.trimEnd()}\n`
+    }
+
+    if (tag === 'ol' || tag === 'ul') {
+      const markerType = tag === 'ol' ? resolveListStyle(node) : 'bullet'
+      listStack.push({ type: tag, index: 0, markerType })
+      const text = node.childNodes.map(walk).join('')
+      listStack.pop()
+      return text
+    }
+
+    if (tag === 'li') {
+      const current = listStack[listStack.length - 1]
+      let prefix = ''
+      if (current) {
+        if (current.type === 'ol') {
+          current.index += 1
+          prefix = `${formatListMarker(current.index, current.markerType)} `
+        } else {
+          prefix = '- '
+        }
+      }
+      const body = node.childNodes.map(walk).join('').trim()
+      return `${prefix}${body}\n`
+    }
+
+    return node.childNodes.map(walk).join('')
+  }
+
+  const output = walk(root)
+  return output
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function normalizeArray(value) {
+  if (Array.isArray(value)) return value
+  if (value == null) return []
+  return [value]
+}
+
+function parseDocxNumbering(numberingXml) {
+  if (!numberingXml) return { numMap: {}, abstractMap: {} }
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
+  const xml = parser.parse(numberingXml)
+  const numbering = xml['w:numbering'] || xml.numbering || {}
+
+  const abstractNums = normalizeArray(numbering['w:abstractNum'] || numbering.abstractNum)
+  const abstractMap = {}
+  abstractNums.forEach((abs) => {
+    const absId = abs?.['@_w:abstractNumId'] || abs?.['@_abstractNumId']
+    if (!absId) return
+    const levels = normalizeArray(abs?.['w:lvl'] || abs?.lvl)
+    abstractMap[absId] = {}
+    levels.forEach((lvl) => {
+      const ilvl = Number(lvl?.['@_w:ilvl'] ?? lvl?.['@_ilvl'])
+      const numFmt = lvl?.['w:numFmt']?.['@_w:val'] || lvl?.numFmt?.['@_val']
+      if (Number.isFinite(ilvl)) {
+        abstractMap[absId][ilvl] = numFmt || 'decimal'
+      }
+    })
+  })
+
+  const nums = normalizeArray(numbering['w:num'] || numbering.num)
+  const numMap = {}
+  nums.forEach((num) => {
+    const numId = num?.['@_w:numId'] || num?.['@_numId']
+    const absId = num?.['w:abstractNumId']?.['@_w:val'] || num?.abstractNumId?.['@_val']
+    if (numId && absId) {
+      numMap[numId] = absId
+    }
+  })
+
+  return { numMap, abstractMap }
+}
+
+function formatDocxListLabel(count, numFmt) {
+  if (!numFmt || numFmt === 'decimal') return `${count}.`
+  if (numFmt === 'lowerLetter' || numFmt === 'lowerAlpha') {
+    return `(${String.fromCharCode(96 + count)})`
+  }
+  if (numFmt === 'upperLetter' || numFmt === 'upperAlpha') {
+    return `(${String.fromCharCode(64 + count)})`
+  }
+  if (numFmt === 'lowerRoman') return `${romanize(count).toLowerCase()}.`
+  if (numFmt === 'upperRoman') return `${romanize(count).toUpperCase()}.`
+  if (numFmt === 'bullet') return '•'
+  return `${count}.`
+}
+
+function extractDocxTextWithNumbering(documentXml, numberingXml) {
+  if (!documentXml) return ''
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' })
+  const xml = parser.parse(documentXml)
+  const body = xml['w:document']?.['w:body'] || xml.document?.body || {}
+  const paragraphs = normalizeArray(body['w:p'] || body.p)
+  const { numMap, abstractMap } = parseDocxNumbering(numberingXml)
+  const counters = {}
+
+  const lines = paragraphs.map((p) => {
+    const runs = normalizeArray(p?.['w:r'] || p?.r)
+    const text = runs
+      .map((r) => {
+        const t = r?.['w:t'] || r?.t
+        if (Array.isArray(t)) return t.map((v) => (v?.['#text'] ?? v ?? '')).join('')
+        return t?.['#text'] ?? t ?? ''
+      })
+      .join('')
+
+    const numPr = p?.['w:pPr']?.['w:numPr'] || p?.pPr?.numPr
+    if (!numPr) return text
+
+    const numId = numPr?.['w:numId']?.['@_w:val'] || numPr?.numId?.['@_val']
+    const ilvl = Number(numPr?.['w:ilvl']?.['@_w:val'] || numPr?.ilvl?.['@_val'] || 0)
+    if (!numId) return text
+
+    const absId = numMap[numId]
+    const numFmt = absId ? abstractMap[absId]?.[ilvl] : null
+    const key = `${numId}:${ilvl}`
+    counters[key] = (counters[key] || 0) + 1
+    const label = formatDocxListLabel(counters[key], numFmt)
+    if (label === '•') return `• ${text}`
+    return `${label} ${text}`
+  })
+
+  return lines.join('\n')
+}
+
+function addImplicitSubparts(text) {
+  const lines = String(text || '').split('\n')
+  const questionStart = /^\s*(Q\d+|\d+)\s*[\.)]/i
+  const listMarker = /^\s*(\(?[a-zA-Z]\)|\(?[ivxIVX]+\)|\d+[\.)]|[-•])\s*/
+  const markerOnly = /^\s*(\(?[a-zA-Z]\)|\(?[ivxIVX]+\)|\d+[\.)])\s*$/
+  const sublistIntro = /:\s*$/
+  const continuationPrefix = /^(also|and|or|which|explain|note|in addition|please)\b/i
+  const bulletMarker = /^\s*[-•]\s+/
+  const out = []
+  let inQuestion = false
+  let subIndex = 0
+  let lastLineWasListItem = false
+  let pendingMarker = null
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+
+    if (!line) {
+      out.push('')
+      continue
+    }
+
+    if (questionStart.test(line)) {
+      inQuestion = true
+      subIndex = 0
+      lastLineWasListItem = false
+      pendingMarker = null
+      out.push(line)
+      continue
+    }
+
+    if (inQuestion) {
+      if (sublistIntro.test(line)) {
+        subIndex = 0
+        lastLineWasListItem = false
+        pendingMarker = null
+        out.push(line)
+        continue
+      }
+
+      if (pendingMarker) {
+        const marker = pendingMarker
+        pendingMarker = null
+        out.push(`${marker} ${line}`)
+        lastLineWasListItem = true
+        continue
+      }
+
+      if (markerOnly.test(line)) {
+        pendingMarker = line.trim()
+        continue
+      }
+
+      if (listMarker.test(line)) {
+        lastLineWasListItem = true
+        out.push(line)
+        continue
+      }
+
+      if (lastLineWasListItem || continuationPrefix.test(line)) {
+        lastLineWasListItem = false
+        out.push(line)
+        continue
+      }
+
+      subIndex += 1
+      const label = `(${String.fromCharCode(96 + subIndex)})`
+      out.push(`${label} ${line}`)
+      continue
+    }
+
+    out.push(line)
+  }
+
+  return out.join('\n')
+}
+
+async function extractTextFromUpload(file) {
+  const fileName = String(file?.originalname || '').toLowerCase()
+  const mime = String(file?.mimetype || '').toLowerCase()
+
+  if (mime.includes('pdf') || fileName.endsWith('.pdf')) {
+    const parsed = await pdfParse(file.buffer)
+    return parsed.text || ''
+  }
+
+  if (mime.includes('word') || fileName.endsWith('.docx')) {
+    try {
+      const zip = await JSZip.loadAsync(file.buffer)
+      const docXml = await zip.file('word/document.xml')?.async('text')
+      const numXml = await zip.file('word/numbering.xml')?.async('text')
+      const docText = extractDocxTextWithNumbering(docXml, numXml)
+      if (docText.trim()) return addImplicitSubparts(docText)
+    } catch {
+      // fall through to mammoth
+    }
+
+    const htmlResult = await mammoth.convertToHtml({ buffer: file.buffer })
+    const htmlText = htmlToTextWithLists(htmlResult.value || '')
+    if (htmlText.trim()) return addImplicitSubparts(htmlText)
+    const rawResult = await mammoth.extractRawText({ buffer: file.buffer })
+    return addImplicitSubparts(rawResult.value || '')
+  }
+
+  return null
 }
 
 /**
@@ -786,17 +1150,6 @@ router.post('/questions', async (req, res) => {
       })
     }
 
-    const normalizeDifficulty = (value) => {
-      const normalized = String(value || '').trim().toLowerCase()
-      if (normalized === 'locq') return 'locq'
-      if (normalized === 'iocq') return 'iocq'
-      if (normalized === 'hocq') return 'hocq'
-      if (normalized === 'easy') return 'locq'
-      if (normalized === 'medium' || normalized === 'intermediate') return 'iocq'
-      if (normalized === 'hard') return 'hocq'
-      return 'iocq'
-    }
-
     // Create question in bank
     const { data: question, error: qError } = await req.supabase
       .from('question_bank')
@@ -835,6 +1188,173 @@ router.post('/questions', async (req, res) => {
   } catch (err) {
     console.error('POST /assignments/questions error:', err)
     return res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+/**
+ * POST /api/v1/assignments/questions/extract
+ * Extract questions from a DOCX/PDF for preview.
+ * Body (multipart): { docFile, classSectionId }
+ */
+router.post('/questions/extract', upload.single('docFile'), async (req, res) => {
+  try {
+    const { classSectionId } = req.body
+    const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
+
+    if (!classSectionId) {
+      return res.status(400).json({ error: 'classSectionId is required' })
+    }
+
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
+
+    const isAssigned = await ensureTeacherAssigned(req.supabase, teacherId, classSectionId)
+    if (!isAssigned) {
+      return res.status(403).json({ error: 'You are not assigned to this class section' })
+    }
+
+    if (!req.file?.buffer) {
+      return res.status(400).json({ error: 'docFile is required' })
+    }
+
+    const rawText = await extractTextFromUpload(req.file)
+    if (rawText == null) {
+      return res.status(400).json({ error: 'Only PDF or DOCX files are supported' })
+    }
+
+    if (!rawText.trim()) {
+      return res.status(400).json({ error: 'Document appears to be empty' })
+    }
+
+    if (!process.env.GROQ_API_KEY) {
+      return res.status(500).json({ error: 'GROQ_API_KEY is missing on the server' })
+    }
+
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+
+    const prompt = `You are extracting exam questions from a document.
+
+Extract ALL questions from the text below. Return ONLY a valid JSON array, no explanation, no markdown, no backticks.
+
+Each item in the array should be:
+{ "question": "the full question text here" }
+
+Rules:
+- Include every question you find, even if it seems incomplete
+- Preserve numbering and labels exactly (1., 2), Q1., (a), (b), etc.)
+- Preserve indentation and line breaks as in the source text
+- Indentation is encoded as [TAB] and [SP] tokens at the start of lines. Keep them exactly.
+- Preserve the full question text including any sub-parts
+- If a line is clearly not a question (headings, instructions, page numbers), skip it
+
+Document text:
+${encodeIndentation(rawText)}`
+
+    const response = await groq.chat.completions.create({
+      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }],
+    })
+
+    const raw = response?.choices?.[0]?.message?.content || ''
+    const cleaned = stripMarkdownJson(raw)
+    let parsed = null
+    try {
+      parsed = JSON.parse(cleaned)
+    } catch (parseError) {
+      return res.status(400).json({ error: 'Failed to parse Grok response as JSON' })
+    }
+
+    const items = Array.isArray(parsed) ? parsed : parsed?.questions
+    const questions = (items || [])
+      .map((item) => ({
+        question: decodeIndentation(
+          String(item?.question || item?.question_text || item?.text || '')
+            .replace(/\r\n/g, '\n')
+            .trimEnd()
+        ),
+      }))
+      .filter((item) => item.question)
+
+    return res.json({
+      totalFound: questions.length,
+      questions,
+    })
+  } catch (err) {
+    console.error('POST /assignments/questions/extract error:', err)
+    return res.status(500).json({ error: 'Failed to extract questions' })
+  }
+})
+
+/**
+ * POST /api/v1/assignments/questions/confirm
+ * Confirm and insert extracted questions into the question bank.
+ * Body: { classSectionId, questions: [{question}], topic?, difficulty? }
+ */
+router.post('/questions/confirm', async (req, res) => {
+  try {
+    const { classSectionId, questions, topic, difficulty } = req.body
+    const user = req.user
+    const teacherId = await getTeacherProfileId(req.supabase, user.id)
+
+    if (!classSectionId) {
+      return res.status(400).json({ error: 'classSectionId is required' })
+    }
+
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ error: 'questions must be a non-empty array' })
+    }
+
+    if (!teacherId) {
+      return res.status(403).json({ error: 'Teacher profile not found' })
+    }
+
+    const isAssigned = await ensureTeacherAssigned(req.supabase, teacherId, classSectionId)
+    if (!isAssigned) {
+      return res.status(403).json({ error: 'You are not assigned to this class section' })
+    }
+
+    const cleaned = questions
+      .map((item) => {
+        const questionText = String(item?.question || item?.question_text || item?.text || '').trim()
+        if (!questionText) return null
+        return {
+          questionText,
+          difficulty: normalizeDifficulty(item?.difficulty || difficulty),
+          topic: String(item?.topic || '').trim(),
+        }
+      })
+      .filter(Boolean)
+
+    if (cleaned.length === 0) {
+      return res.status(400).json({ error: 'No valid questions provided' })
+    }
+
+    const rows = cleaned.map((item) => ({
+      class_section_id: classSectionId,
+      created_by: teacherId,
+      question_text: item.questionText,
+      topic: item.topic || topic?.trim() || null,
+      difficulty: item.difficulty,
+    }))
+
+    const { data, error } = await req.supabase
+      .from('question_bank')
+      .insert(rows)
+      .select('id')
+
+    if (error) {
+      return res.status(400).json({ error: error.message })
+    }
+
+    return res.status(201).json({
+      inserted: data?.length || 0,
+    })
+  } catch (err) {
+    console.error('POST /assignments/questions/confirm error:', err)
+    return res.status(500).json({ error: 'Failed to confirm questions' })
   }
 })
 

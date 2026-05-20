@@ -7,6 +7,8 @@ import {
   createAssignment,
   getQuestionBank,
   addQuestion,
+  extractQuestionBankFromFile,
+  confirmQuestionBankBulk,
   linkQuestionsToAssignment,
 } from '../../lib/assignments'
 import { apiFetch } from '../../lib/api'
@@ -47,6 +49,14 @@ export default function TeacherAssignments() {
   const [qText, setQText] = useState('')
   const [qTopic, setQTopic] = useState('')
   const [qDifficulty, setQDifficulty] = useState('iocq')
+  const [bulkStep, setBulkStep] = useState('idle')
+  const [bulkQuestions, setBulkQuestions] = useState([])
+  const [bulkSelected, setBulkSelected] = useState([])
+  const [bulkTopic, setBulkTopic] = useState('')
+  const [bulkDifficulty, setBulkDifficulty] = useState('iocq')
+  const [bulkFileName, setBulkFileName] = useState('')
+  const [bulkLoading, setBulkLoading] = useState(false)
+  const [bulkConfirming, setBulkConfirming] = useState(false)
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -62,6 +72,7 @@ export default function TeacherAssignments() {
     if (!selectedSection) return
     loadAssignments()
     loadQuestions()
+    resetBulkUpload()
   }, [selectedSection])
 
   function isPastDeadline(assignment) {
@@ -361,6 +372,130 @@ export default function TeacherAssignments() {
     setShowQForm(false)
     await loadQuestions()
     addToast({ type: 'success', title: 'Question added', message: 'Question saved to the bank.' })
+  }
+
+  function resetBulkUpload() {
+    setBulkStep('idle')
+    setBulkQuestions([])
+    setBulkSelected([])
+    setBulkTopic('')
+    setBulkDifficulty('iocq')
+    setBulkFileName('')
+    setBulkLoading(false)
+    setBulkConfirming(false)
+  }
+
+  async function handleBulkUpload(file) {
+    if (!selectedSection) {
+      addToast({ type: 'error', title: 'Select a course', message: 'Choose a course before uploading.' })
+      return
+    }
+    if (!file) return
+
+    setBulkLoading(true)
+    setBulkFileName(file.name)
+
+    const { data, error: extractError } = await extractQuestionBankFromFile(file, selectedSection)
+    if (extractError) {
+      setBulkLoading(false)
+      addToast({
+        type: 'error',
+        title: 'Extract failed',
+        message: extractError.message || 'Unable to extract questions from the document.'
+      })
+      return
+    }
+
+    const extracted = (data?.questions || []).map((item) => ({
+      question: item.question,
+      difficulty: bulkDifficulty,
+      topic: '',
+    }))
+    if (!extracted.length) {
+      setBulkLoading(false)
+      addToast({ type: 'error', title: 'No questions found', message: 'Try a different document.' })
+      return
+    }
+
+    setBulkQuestions(extracted)
+    setBulkSelected(extracted.map((_, index) => index))
+    setBulkStep('preview')
+    setBulkLoading(false)
+  }
+
+  function toggleBulkIndex(index) {
+    setBulkSelected((prev) => (
+      prev.includes(index) ? prev.filter((id) => id !== index) : [...prev, index]
+    ))
+  }
+
+  function applyBulkMetadata() {
+    if (!bulkSelected.length) return
+    setBulkQuestions((prev) => prev.map((item, idx) => {
+      if (!bulkSelected.includes(idx)) return item
+      return {
+        ...item,
+        topic: bulkTopic.trim() || item.topic,
+        difficulty: bulkDifficulty || item.difficulty,
+      }
+    }))
+  }
+
+  function renderBulkQuestionText(text) {
+    const lines = String(text || '').split('\n')
+    return lines.map((line, index) => {
+      if (!line.trim()) {
+        return <div key={`line-${index}`} className="h-4" />
+      }
+      const bulletMatch = line.match(/^\s*•\s+(.*)$/)
+      if (bulletMatch) {
+        return (
+          <div key={`line-${index}`} className="flex items-start gap-2">
+            <span className="mt-2 inline-block h-1.5 w-1.5 rounded-full bg-gray-400 dark:bg-gray-500" />
+            <span className="flex-1">{bulletMatch[1]}</span>
+          </div>
+        )
+      }
+      return <div key={`line-${index}`}>{line}</div>
+    })
+  }
+
+  async function handleBulkConfirm() {
+    if (!selectedSection) return
+    const approved = bulkSelected.map((index) => bulkQuestions[index]).filter(Boolean)
+    if (!approved.length) {
+      addToast({ type: 'error', title: 'No questions selected', message: 'Select at least one question.' })
+      return
+    }
+
+    setBulkConfirming(true)
+    const { error: confirmError } = await confirmQuestionBankBulk(
+      selectedSection,
+      approved,
+      bulkTopic.trim() || null,
+      bulkDifficulty
+    )
+
+    if (confirmError) {
+      setBulkConfirming(false)
+      addToast({
+        type: 'error',
+        title: 'Insert failed',
+        message: confirmError.message || 'Unable to add questions to the bank.'
+      })
+      return
+    }
+
+    await loadQuestions()
+    setBulkConfirming(false)
+    const selectedSet = new Set(bulkSelected)
+    const remaining = bulkQuestions.filter((_, idx) => !selectedSet.has(idx))
+    setBulkQuestions(remaining)
+    setBulkSelected([])
+    if (remaining.length === 0) {
+      resetBulkUpload()
+    }
+    addToast({ type: 'success', title: 'Questions added', message: `${approved.length} questions saved.` })
   }
 
   return (
@@ -789,6 +924,137 @@ export default function TeacherAssignments() {
                     </button>
                   </div>
                 )}
+
+                <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 flex flex-col gap-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Bulk upload questions</h3>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Upload a PDF or DOCX and review the extracted questions before saving.
+                      </p>
+                    </div>
+                    {bulkStep === 'preview' && (
+                      <button
+                        type="button"
+                        onClick={resetBulkUpload}
+                        className="text-xs px-3 py-2 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700"
+                      >
+                        Start over
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-blue-100/60 dark:border-blue-900/40 bg-blue-50/60 dark:bg-blue-950/30 px-4 py-3 text-xs text-blue-900/80 dark:text-blue-100/80">
+                    <p className="font-semibold">Format tips for best results</p>
+                    <ul className="mt-2 space-y-1">
+                      <li>One question per paragraph.</li>
+                      <li>Use clear numbering (1., 2), Q1, etc.).</li>
+                      <li>Keep sub-parts with the question (a), (b) in the same paragraph.</li>
+                      <li>Avoid mixing headings/instructions between questions.</li>
+                      <li>Avoid tables for question text if possible.</li>
+                    </ul>
+                  </div>
+
+                  {bulkStep === 'idle' && (
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                      <input
+                        type="file"
+                        accept=".pdf,.docx"
+                        onChange={(e) => handleBulkUpload(e.target.files?.[0])}
+                        className="w-full text-sm text-gray-700 dark:text-gray-300 file:mr-4 file:rounded-lg file:border-0 file:bg-gray-100 file:px-3 file:py-2 file:text-sm file:font-medium file:text-gray-700 hover:file:bg-gray-200 hover:file:text-gray-900 dark:file:bg-gray-800 dark:file:text-gray-200 dark:hover:file:bg-gray-700 dark:hover:file:text-gray-100"
+                      />
+                      {bulkLoading && (
+                        <p className="text-xs text-gray-500 dark:text-gray-400">Extracting questions...</p>
+                      )}
+                    </div>
+                  )}
+
+                  {bulkStep === 'preview' && (
+                    <div className="flex flex-col gap-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div className="text-xs text-gray-500 dark:text-gray-400">
+                          {bulkFileName} • {bulkQuestions.length} questions found • {bulkSelected.length} selected
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setBulkSelected(bulkQuestions.map((_, idx) => idx))}
+                            className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700"
+                          >
+                            Select all
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBulkSelected([])}
+                            className="text-xs px-2.5 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700"
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <input
+                          type="text"
+                          value={bulkTopic}
+                          onChange={(e) => setBulkTopic(e.target.value)}
+                          placeholder="Topic for selected questions (optional)"
+                          className="flex-1 px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white"
+                        />
+                        <select
+                          value={bulkDifficulty}
+                          onChange={(e) => setBulkDifficulty(e.target.value)}
+                          className="px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-sm text-gray-900 dark:text-white"
+                        >
+                          <option value="locq">LOCQ</option>
+                          <option value="iocq">IOCQ</option>
+                          <option value="hocq">HOCQ</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={applyBulkMetadata}
+                          className="text-sm px-3 py-2.5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                        >
+                          Apply to selected
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleBulkConfirm}
+                          disabled={bulkConfirming}
+                          className="text-sm px-4 py-2.5 rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-medium transition-colors disabled:opacity-60"
+                        >
+                          {bulkConfirming ? 'Saving...' : `Add ${bulkSelected.length} questions`}
+                        </button>
+                      </div>
+
+                      <div className="flex flex-col gap-2 max-h-[360px] overflow-y-auto custom-scrollbar pr-1">
+                        {bulkQuestions.map((q, index) => (
+                          <label key={`${index}-${q.question}`} className="flex items-start gap-3 rounded-xl border border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-gray-800/60 px-3 py-2 text-xs text-gray-600 dark:text-gray-300">
+                            <input
+                              type="checkbox"
+                              checked={bulkSelected.includes(index)}
+                              onChange={() => toggleBulkIndex(index)}
+                              className="mt-1 h-4 w-4 rounded border-gray-300 dark:border-gray-700"
+                            />
+                            <div className="flex-1">
+                              <div className="text-sm text-gray-800 dark:text-gray-100">
+                                {renderBulkQuestionText(q.question)}
+                              </div>
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-300">
+                                  {q.topic || bulkTopic.trim() || 'No topic'}
+                                </span>
+                                <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-300">
+                                  {(q.difficulty || bulkDifficulty).toUpperCase()}
+                                </span>
+                              </div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {questions.length === 0 ? (
                   <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl px-5 py-8 text-center">
